@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Curation
+short_description: Confluence 문서를 수집해 최신성, 신뢰도, 변경 흐름을 한글로 정리합니다.
+default_prompt: Confluence 문서들을 비교해서 어떤 문서가 최신이고, 어떤 문서가 더 신뢰할 만한지, 어떤 순서로 변경되었는지 한글로 정리해줘.

@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+from collections import defaultdict
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple
+
+
+STATUS_KO = {
+    "fresh-and-trusted": "최신·신뢰 높음",
+    "fresh-but-unverified": "최신이나 검증 부족",
+    "trusted-but-stale": "신뢰 높으나 오래됨",
+    "likely-duplicate": "중복 가능성",
+    "likely-superseded": "대체됨 가능성",
+    "needs-review": "검토 필요",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Curate fetched Confluence metadata into Korean Markdown.")
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--top-n", type=int, default=20)
+    parser.add_argument("--recent-days-strong", type=int, default=30)
+    parser.add_argument("--recent-days-medium", type=int, default=90)
+    parser.add_argument("--title-similarity-threshold", type=float, default=0.82)
+    parser.add_argument("--people-signal-weight", type=float, default=35.0)
+    parser.add_argument("--freshness-weight", type=float, default=40.0)
+    parser.add_argument("--relationship-weight", type=float, default=25.0)
+    parser.add_argument("--emit-json-summary")
+    return parser.parse_args()
+
+
+def parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def days_ago(value: Optional[str]) -> Optional[int]:
+    dt = parse_datetime(value)
+    if not dt:
+        return None
+    return max(0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).days)
+
+
+def title_similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def score_freshness(page: Dict[str, Any], strong_days: int, medium_days: int) -> Tuple[int, List[str]]:
+    evidence: List[str] = []
+    updated_days = days_ago(page.get("updated_at"))
+    version_count = len(page.get("version_events", []))
+    contributor_count = len(page.get("recent_contributors", []))
+    score = 0.0
+
+    if updated_days is None:
+        evidence.append("최근 수정일 정보가 부족합니다")
+    elif updated_days <= 7:
+        score += 40
+        evidence.append("최근 7일 내 수정")
+    elif updated_days <= strong_days:
+        score += 34
+        evidence.append(f"최근 {strong_days}일 내 수정")
+    elif updated_days <= medium_days:
+        score += 24
+        evidence.append(f"최근 {medium_days}일 내 수정")
+    elif updated_days <= 180:
+        score += 12
+        evidence.append("최근 수정은 있으나 다소 오래됨")
+    else:
+        evidence.append("오래된 문서로 보임")
+
+    score += min(version_count, 5) * 4
+    if version_count:
+        evidence.append(f"최근 버전 이력 {version_count}건 확인")
+    score += min(contributor_count, 4) * 5
+    if contributor_count >= 2:
+        evidence.append(f"최근 기여자 {contributor_count}명")
+
+    return min(100, round(score)), evidence
+
+
+def score_people(page: Dict[str, Any], people_by_id: Dict[str, Dict[str, Any]]) -> Tuple[float, List[str], bool]:
+    evidence: List[str] = []
+    missing = False
+    total = 0.0
+    contributors = page.get("recent_contributors", [])
+    for account_id in contributors:
+        person = people_by_id.get(account_id)
+        if not person:
+            missing = True
+            continue
+        hint = person.get("org_hint", {})
+        confidence = hint.get("confidence", "low")
+        role_band = hint.get("role_band", "unknown")
+        title = hint.get("title")
+        team = hint.get("team")
+
+        band_score = {
+            "director": 9,
+            "lead": 8,
+            "staff": 7,
+            "individual": 6,
+            "unknown": 2,
+        }.get(role_band, 2)
+        confidence_multiplier = {"high": 1.0, "medium": 0.8, "low": 0.4}.get(confidence, 0.4)
+        total += band_score * confidence_multiplier
+        if title or team:
+            parts = [part for part in [team, title] if part]
+            evidence.append(f"{person.get('display_name')}: {' / '.join(parts)}")
+        else:
+            missing = True
+
+    if not contributors:
+        missing = True
+        evidence.append("기여자 정보가 부족합니다")
+    return min(35.0, total), evidence[:3], missing
+
+
+def score_relationships(
+    page: Dict[str, Any],
+    relationships: List[Dict[str, Any]],
+    page_lookup: Dict[str, Dict[str, Any]],
+) -> Tuple[float, List[str], bool, bool]:
+    evidence: List[str] = []
+    inbound = [rel for rel in relationships if rel.get("to_page_id") == page["page_id"]]
+    related = [rel for rel in inbound if rel.get("type") == "related_title"]
+    ancestor = [rel for rel in inbound if rel.get("type") == "ancestor"]
+    child = [rel for rel in inbound if rel.get("type") == "child"]
+
+    score = min(20.0, len(inbound) * 4.0)
+    duplicate = False
+    superseded = False
+
+    if ancestor:
+        evidence.append("상위 구조 안에서 관리되는 문서")
+        score += 4
+    if child:
+        evidence.append("다른 문서와 계층 관계가 확인됨")
+        score += 3
+    if related:
+        score += min(8.0, len(related) * 3.0)
+        evidence.append(f"유사 제목 문서 {len(related)}건")
+        newer_related = []
+        for rel in related:
+            other = page_lookup.get(rel.get("from_page_id"))
+            if not other:
+                continue
+            if (days_ago(other.get("updated_at")) or math.inf) < (days_ago(page.get("updated_at")) or math.inf):
+                newer_related.append(other)
+        duplicate = len(related) >= 1
+        superseded = bool(newer_related) and (days_ago(page.get("updated_at")) or math.inf) > 60
+
+    return min(25.0, score), evidence, duplicate, superseded
+
+
+def compute_confidence(freshness: int, trust: int, missing_people: bool, duplicate: bool, warnings: List[str]) -> str:
+    confidence_score = 0
+    if freshness >= 60:
+        confidence_score += 1
+    if trust >= 60:
+        confidence_score += 1
+    if not missing_people:
+        confidence_score += 1
+    if not duplicate:
+        confidence_score += 1
+    if warnings:
+        confidence_score -= 1
+    if confidence_score >= 3:
+        return "high"
+    if confidence_score >= 2:
+        return "medium"
+    return "low"
+
+
+def determine_status(
+    freshness: int,
+    trust: int,
+    confidence: str,
+    duplicate: bool,
+    superseded: bool,
+) -> str:
+    if superseded:
+        return "likely-superseded"
+    if duplicate:
+        return "likely-duplicate"
+    if freshness >= 65 and trust >= 65 and confidence != "low":
+        return "fresh-and-trusted"
+    if freshness >= 65 and trust < 65:
+        return "fresh-but-unverified"
+    if freshness < 65 and trust >= 65:
+        return "trusted-but-stale"
+    return "needs-review"
+
+
+def cluster_pages(pages: List[Dict[str, Any]], threshold: float) -> List[List[Dict[str, Any]]]:
+    clusters: List[List[Dict[str, Any]]] = []
+    for page in pages:
+        placed = False
+        for cluster in clusters:
+            if any(title_similarity(page["title"], other["title"]) >= threshold for other in cluster):
+                cluster.append(page)
+                placed = True
+                break
+        if not placed:
+            clusters.append([page])
+    return [cluster for cluster in clusters if len(cluster) > 1]
+
+
+def level_label(score: int) -> str:
+    if score >= 80:
+        return "높음"
+    if score >= 55:
+        return "보통"
+    return "낮음"
+
+
+def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings: List[str]) -> List[str]:
+    scope = meta.get("scope", {})
+    lines = [
+        f"- 총 {len(pages)}개 문서를 기준으로 분석했습니다.",
+        f"- 인증 방식은 `{meta.get('auth_used', 'unknown')}` 입니다.",
+        f"- API 호출 제한은 초당 {meta.get('rate_limit_rps', 'unknown')}회입니다.",
+    ]
+    if scope.get("space_key"):
+        lines.append(f"- 대상 space는 `{scope['space_key']}` 입니다.")
+    if scope.get("root_page_id"):
+        lines.append(f"- 기준 루트 페이지 ID는 `{scope['root_page_id']}` 입니다.")
+    if warnings:
+        lines.append(f"- 수집 경고가 {len(warnings)}건 있어 일부 판단 근거가 약할 수 있습니다.")
+    return lines
+
+
+def build_markdown(
+    meta: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    scored_pages: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    timeline: List[Dict[str, Any]],
+    warnings: List[str],
+) -> str:
+    best_current = max(scored_pages, key=lambda item: item["freshness_score"], default=None)
+    best_trust = max(scored_pages, key=lambda item: item["trust_score"], default=None)
+    review_pages = [item for item in scored_pages if item["status_flag"] == "needs-review"]
+
+    lines: List[str] = ["# Confluence 문서 큐레이션", ""]
+    lines.append("## 요약")
+    lines.extend(summarize_scope(meta, pages, warnings))
+    if best_current:
+        lines.append(
+            f"- 현재 작업 기준으로는 **{best_current['title']}** 가 가장 최신 후보로 보입니다."
+        )
+    if best_trust:
+        lines.append(
+            f"- 신뢰도 관점에서는 **{best_trust['title']}** 가 가장 유력합니다."
+        )
+    if best_current and best_trust and best_current["page_id"] != best_trust["page_id"]:
+        lines.append("- 최신성과 신뢰도가 서로 다른 문서에 모여 있어 함께 참고하는 편이 안전합니다.")
+    if warnings:
+        lines.append("- 프로필 정보 또는 API 제한 때문에 일부 문서는 확신이 낮습니다.")
+    lines.append("")
+
+    lines.append("## 문서 현황")
+    lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 판단 근거 |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for item in scored_pages:
+        team_title = item.get("people_summary") or "정보 부족"
+        updated_at = item.get("updated_at") or "-"
+        evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
+        authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
+        lines.append(
+            f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {evidence} |"
+        )
+    lines.append("")
+
+    lines.append("## 변경 흐름")
+    if timeline:
+        for event in timeline[:20]:
+            lines.append(f"- {event['summary_ko']}")
+    else:
+        lines.append("- 확인 가능한 변경 흐름 정보가 충분하지 않습니다.")
+    lines.append("")
+
+    lines.append("## 검토 필요 문서")
+    if review_pages:
+        for item in review_pages[:10]:
+            note = item.get("risk_notes", ["근거가 충분하지 않습니다"])[0]
+            lines.append(f"- **{item['title']}**: {note}")
+    else:
+        lines.append("- 현재 기준으로 특별히 검토 필요로 분류된 문서는 많지 않습니다.")
+    lines.append("")
+
+    lines.append("## 추천 결론")
+    if best_current:
+        lines.append(
+            f"- 현재 실무 작업 기준 문서로는 **{best_current['title']}** 를 우선 보는 것이 적절해 보입니다."
+        )
+    if best_trust and best_current and best_trust["page_id"] != best_current["page_id"]:
+        lines.append(
+            f"- 배경 기준이나 정책 맥락은 **{best_trust['title']}** 를 함께 참고하는 편이 안전합니다."
+        )
+    for cluster in clusters[:5]:
+        titles = ", ".join(item["title"] for item in cluster["pages"])
+        lines.append(f"- 유사 주제 문서군 `{titles}` 는 중복 또는 대체 관계를 추가 확인할 필요가 있습니다.")
+    if warnings:
+        lines.append("- 수집 제약이 있었으므로 최종 기준 문서로 단정하기 전에 한 번 더 확인하는 것이 좋습니다.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def main() -> int:
+    args = parse_args()
+    with open(args.input, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    meta = payload.get("meta", {})
+    pages = payload.get("pages", [])
+    warnings = payload.get("warnings", [])
+    relationships = payload.get("relationships", [])
+    people_by_id = {person["account_id"]: person for person in payload.get("people", []) if person}
+    page_lookup = {page["page_id"]: page for page in pages}
+
+    scored_pages: List[Dict[str, Any]] = []
+    for page in pages:
+        freshness_score, freshness_evidence = score_freshness(
+            page, args.recent_days_strong, args.recent_days_medium
+        )
+        people_score, people_evidence, missing_people = score_people(page, people_by_id)
+        relationship_score, relationship_evidence, duplicate, superseded = score_relationships(
+            page, relationships, page_lookup
+        )
+        trust_score = min(100, round(people_score + relationship_score + min(20, freshness_score * 0.2)))
+        confidence = compute_confidence(freshness_score, trust_score, missing_people, duplicate, warnings)
+        status_flag = determine_status(freshness_score, trust_score, confidence, duplicate, superseded)
+        recent_people_summary = []
+        for account_id in page.get("recent_contributors", [])[:3]:
+            person = people_by_id.get(account_id)
+            if not person:
+                continue
+            hint = person.get("org_hint", {})
+            bits = [hint.get("team"), hint.get("title")]
+            summary = " / ".join([bit for bit in bits if bit])
+            if summary:
+                recent_people_summary.append(summary)
+        evidence = freshness_evidence + relationship_evidence
+        if people_evidence:
+            evidence.append("주요 기여자: " + "; ".join(people_evidence[:2]))
+        risk_notes = []
+        if missing_people:
+            risk_notes.append("작성자 또는 수정자 프로필 정보가 부족해 신뢰도 확신이 낮습니다.")
+        if duplicate:
+            risk_notes.append("유사 문서가 있어 기준 문서 여부를 추가 확인할 필요가 있습니다.")
+        if superseded:
+            risk_notes.append("더 최근에 갱신된 유사 문서가 있어 대체되었을 가능성이 있습니다.")
+        if not risk_notes:
+            risk_notes.append("현재 기준으로는 큰 충돌 신호가 많지 않습니다.")
+        scored_pages.append(
+            {
+                "page_id": page["page_id"],
+                "title": page["title"],
+                "updated_at": page.get("updated_at"),
+                "recent_contributors": page.get("recent_contributors", []),
+                "people_summary": ", ".join(recent_people_summary) if recent_people_summary else "정보 부족",
+                "freshness_score": freshness_score,
+                "trust_score": trust_score,
+                "confidence_level": confidence,
+                "status_flag": status_flag,
+                "evidence": evidence[:5],
+                "risk_notes": risk_notes,
+            }
+        )
+
+    scored_pages.sort(key=lambda item: (item["trust_score"] + item["freshness_score"]), reverse=True)
+    scored_pages = scored_pages[: args.top_n]
+
+    cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
+    clusters = []
+    for idx, cluster in enumerate(cluster_groups, start=1):
+        ordered = sorted(cluster, key=lambda item: days_ago(item.get("updated_at")) or 999999)
+        clusters.append(
+            {
+                "cluster_id": f"topic_{idx}",
+                "label": ordered[0]["title"],
+                "page_ids": [item["page_id"] for item in ordered],
+                "likely_current_page_id": ordered[0]["page_id"],
+                "likely_background_page_id": ordered[-1]["page_id"],
+                "confidence": "medium",
+                "pages": ordered,
+            }
+        )
+
+    timeline = []
+    for page in sorted(pages, key=lambda item: parse_datetime(item.get("updated_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
+        summary = f"{(page.get('updated_at') or '날짜 미상')[:10]}: {page['title']} 문서가 갱신되었습니다."
+        timeline.append({"at": page.get("updated_at"), "page_id": page["page_id"], "event_type": "updated", "summary_ko": summary})
+        for event in page.get("version_events", [])[:3]:
+            if event.get("updated_at"):
+                timeline.append(
+                    {
+                        "at": event.get("updated_at"),
+                        "page_id": page["page_id"],
+                        "event_type": "version",
+                        "summary_ko": f"{event.get('updated_at')[:10]}: {page['title']} 버전 {event.get('version')} 이 기록되었습니다.",
+                    }
+                )
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    markdown = build_markdown(meta, pages, scored_pages, clusters, timeline, warnings)
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as handle:
+        handle.write(markdown)
+
+    if args.emit_json_summary:
+        summary_payload = {
+            "summary": {
+                "best_current_candidate_page_id": max(scored_pages, key=lambda item: item["freshness_score"], default={}).get("page_id"),
+                "best_trust_candidate_page_id": max(scored_pages, key=lambda item: item["trust_score"], default={}).get("page_id"),
+                "needs_review_count": len([item for item in scored_pages if item["status_flag"] == "needs-review"]),
+            },
+            "scored_pages": scored_pages,
+            "topic_clusters": [
+                {
+                    "cluster_id": cluster["cluster_id"],
+                    "label": cluster["label"],
+                    "page_ids": cluster["page_ids"],
+                    "likely_current_page_id": cluster["likely_current_page_id"],
+                    "likely_background_page_id": cluster["likely_background_page_id"],
+                    "confidence": cluster["confidence"],
+                }
+                for cluster in clusters
+            ],
+            "timeline": timeline[:50],
+            "warnings": warnings,
+        }
+        with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
+            json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
