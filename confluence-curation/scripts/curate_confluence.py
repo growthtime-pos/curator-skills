@@ -5,7 +5,7 @@ import argparse
 import json
 import math
 import os
-from collections import defaultdict
+import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
@@ -225,6 +225,94 @@ def level_label(score: int) -> str:
     return "낮음"
 
 
+def content_signal(page: Dict[str, Any]) -> Tuple[int, List[str]]:
+    excerpt = (page.get("body_excerpt") or "").strip()
+    if not excerpt:
+        return 0, ["본문 내용이 수집되지 않았습니다"]
+    sentences = split_sentences(excerpt)
+    score = 10 if len(sentences) >= 2 else 5
+    if len(excerpt) >= 800:
+        score += 10
+    elif len(excerpt) >= 300:
+        score += 6
+    return min(20, score), [f"본문 요약 길이 {len(excerpt)}자", f"핵심 문장 {min(len(sentences), 5)}개 추출 가능"]
+
+
+def split_sentences(text: str) -> List[str]:
+    parts = re.split(r"(?<=[.!?।다요])\s+|\n+", text)
+    cleaned = []
+    for part in parts:
+        chunk = re.sub(r"\s+", " ", part).strip(" -|")
+        if len(chunk) >= 18:
+            cleaned.append(chunk)
+    return cleaned
+
+
+def choose_key_sentences(text: str, limit: int = 3) -> List[str]:
+    preferred: List[str] = []
+    fallback: List[str] = []
+    for sentence in split_sentences(text):
+        if len(sentence) > 220:
+            sentence = sentence[:217] + "..."
+        if re.search(r"(정의|목적|절차|정책|기준|원칙|방법|요약|설명|활용|특징|구성|중요|의미)", sentence):
+            preferred.append(sentence)
+        else:
+            fallback.append(sentence)
+    chosen = preferred[:limit]
+    if len(chosen) < limit:
+        chosen.extend(fallback[: limit - len(chosen)])
+    return chosen
+
+
+def synthesize_trusted_data(scored_pages: List[Dict[str, Any]], page_lookup: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    ranked = sorted(
+        scored_pages,
+        key=lambda item: (item["trust_score"], item["freshness_score"], item["confidence_level"] == "high"),
+        reverse=True,
+    )
+    for item in ranked[:5]:
+        page = page_lookup.get(item["page_id"], {})
+        excerpt = (page.get("body_excerpt") or "").strip()
+        if not excerpt:
+            continue
+        points = choose_key_sentences(excerpt, limit=3)
+        if not points:
+            continue
+        items.append(
+            {
+                "page_id": item["page_id"],
+                "title": item["title"],
+                "space_key": page.get("space_key"),
+                "trust_score": item["trust_score"],
+                "freshness_score": item["freshness_score"],
+                "confidence_level": item["confidence_level"],
+                "points": points,
+            }
+        )
+    return items
+
+
+def synthesize_overview(scored_pages: List[Dict[str, Any]], page_lookup: Dict[str, Dict[str, Any]]) -> List[str]:
+    lines: List[str] = []
+    ranked = sorted(scored_pages, key=lambda item: item["trust_score"] + item["freshness_score"], reverse=True)
+    seen = set()
+    for item in ranked:
+        page = page_lookup.get(item["page_id"], {})
+        excerpt = (page.get("body_excerpt") or "").strip()
+        if not excerpt:
+            continue
+        for sentence in choose_key_sentences(excerpt, limit=2):
+            key = sentence[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(sentence)
+            if len(lines) >= 6:
+                return lines
+    return lines
+
+
 def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings: List[str]) -> List[str]:
     scope = meta.get("scope", {})
     lines = [
@@ -234,6 +322,8 @@ def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings:
     ]
     if scope.get("space_key"):
         lines.append(f"- 대상 space는 `{scope['space_key']}` 입니다.")
+    if scope.get("all_spaces"):
+        lines.append("- 접근 가능한 전체 space 범위를 대상으로 분석했습니다.")
     if scope.get("root_page_id"):
         lines.append(f"- 기준 루트 페이지 ID는 `{scope['root_page_id']}` 입니다.")
     if warnings:
@@ -247,6 +337,8 @@ def build_markdown(
     scored_pages: List[Dict[str, Any]],
     clusters: List[Dict[str, Any]],
     timeline: List[Dict[str, Any]],
+    trusted_data: List[Dict[str, Any]],
+    synthesized_overview: List[str],
     warnings: List[str],
 ) -> str:
     best_current = max(scored_pages, key=lambda item: item["freshness_score"], default=None)
@@ -268,6 +360,29 @@ def build_markdown(
         lines.append("- 최신성과 신뢰도가 서로 다른 문서에 모여 있어 함께 참고하는 편이 안전합니다.")
     if warnings:
         lines.append("- 프로필 정보 또는 API 제한 때문에 일부 문서는 확신이 낮습니다.")
+    lines.append("")
+
+    lines.append("## 정리된 핵심 내용")
+    if synthesized_overview:
+        for sentence in synthesized_overview:
+            lines.append(f"- {sentence}")
+    else:
+        lines.append("- 본문 내용이 충분히 수집되지 않아 핵심 내용을 자동 정리하지 못했습니다.")
+    lines.append("")
+
+    lines.append("## 가장 신뢰할 수 있는 데이터")
+    if trusted_data:
+        for item in trusted_data:
+            lines.append(
+                f"### {item['title']} ({item.get('space_key') or 'space 미상'})"
+            )
+            lines.append(
+                f"- 신뢰도 {item['trust_score']}, 최신성 {item['freshness_score']}, 확신도 {item['confidence_level']}"
+            )
+            for point in item["points"]:
+                lines.append(f"- {point}")
+    else:
+        lines.append("- 본문 내용이 없거나 너무 짧아 신뢰 데이터 정리를 만들지 못했습니다.")
     lines.append("")
 
     lines.append("## 문서 현황")
@@ -340,7 +455,8 @@ def main() -> int:
         relationship_score, relationship_evidence, duplicate, superseded = score_relationships(
             page, relationships, page_lookup
         )
-        trust_score = min(100, round(people_score + relationship_score + min(20, freshness_score * 0.2)))
+        content_score, content_evidence = content_signal(page)
+        trust_score = min(100, round(people_score + relationship_score + content_score + min(20, freshness_score * 0.2)))
         confidence = compute_confidence(freshness_score, trust_score, missing_people, duplicate, warnings)
         status_flag = determine_status(freshness_score, trust_score, confidence, duplicate, superseded)
         recent_people_summary = []
@@ -353,7 +469,7 @@ def main() -> int:
             summary = " / ".join([bit for bit in bits if bit])
             if summary:
                 recent_people_summary.append(summary)
-        evidence = freshness_evidence + relationship_evidence
+        evidence = freshness_evidence + relationship_evidence + content_evidence
         if people_evidence:
             evidence.append("주요 기여자: " + "; ".join(people_evidence[:2]))
         risk_notes = []
@@ -416,7 +532,19 @@ def main() -> int:
                 )
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
 
-    markdown = build_markdown(meta, pages, scored_pages, clusters, timeline, warnings)
+    trusted_data = synthesize_trusted_data(scored_pages, page_lookup)
+    synthesized_overview = synthesize_overview(scored_pages, page_lookup)
+
+    markdown = build_markdown(
+        meta,
+        pages,
+        scored_pages,
+        clusters,
+        timeline,
+        trusted_data,
+        synthesized_overview,
+        warnings,
+    )
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as handle:
         handle.write(markdown)
@@ -440,6 +568,7 @@ def main() -> int:
                 }
                 for cluster in clusters
             ],
+            "trusted_data": trusted_data,
             "timeline": timeline[:50],
             "warnings": warnings,
         }

@@ -22,10 +22,10 @@ When that happens, use author and editor context as a heuristic, not as a hard r
 ## Default Workflow
 
 1. Define the scope first:
-   - target space
+   - target space or all accessible spaces
    - seed page or page set
    - optional date window
-2. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, and profile hints.
+2. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
 3. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
 4. Run `scripts/curate_confluence.py` on the fetched JSON.
 5. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
@@ -49,11 +49,18 @@ When that happens, use author and editor context as a heuristic, not as a hard r
 - For Server or Data Center, try token-based auth first and only then fall back to username/password.
 - Reuse cached profile results for the same person within one fetch run.
 - Prefer metadata and relationship signals before pulling full body content.
+- Use `--all-spaces` when the user wants cross-space search instead of a single space.
+- Use `--include-body` when the user wants the skill to organize the content itself, not only metadata.
+- Use `--cache-dir` to persist fetched results locally and reuse them later.
+- Use `--cache-only` to work from saved data without making new API calls.
+- Use `--refresh-cache` when the saved data should be ignored and fetched again.
 
 ## Output Requirements
 
 Always produce:
 - a short Korean summary of the current best candidates
+- a Korean synthesis of the underlying content when body text is available
+- a section showing the most trustworthy data cleaned up into readable bullets
 - a table of candidate pages
 - a timeline or ordered change flow
 - explicit warning flags
@@ -62,6 +69,8 @@ Always produce:
 ## Example Invocations
 
 - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --output /tmp/confluence.json`
+- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --output /tmp/confluence-ai.json`
+- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --cache-only --output /tmp/confluence-ai.json`
 - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --output /tmp/confluence.md`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
