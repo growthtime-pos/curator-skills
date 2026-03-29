@@ -204,7 +204,7 @@ def choose_background_page(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         pages,
         key=lambda page: (
             len(page.get("ancestors", [])),
-            -(page.get("updated_days_ago") if page.get("updated_days_ago") is not None else 999999),
+            page.get("updated_days_ago") if page.get("updated_days_ago") is not None else -1,
         ),
     )
 
