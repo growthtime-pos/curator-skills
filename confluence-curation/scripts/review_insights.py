@@ -152,11 +152,20 @@ def combine_reviews(reviews: List[Dict[str, Any]]) -> str:
 
 def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
     score = confidence_rank(original)
+    warn_count = 0
+    fail_count = 0
     for review in reviews:
         if review.get("severity") == "fail":
-            score -= 2
+            fail_count += 1
         elif review.get("severity") == "warn":
-            score -= 1
+            warn_count += 1
+
+    score -= min(fail_count, 1)
+    if warn_count >= 2:
+        score -= 1
+    if fail_count >= 2:
+        score -= 1
+
     if score >= 3:
         return "high"
     if score >= 2:
