@@ -21,6 +21,10 @@ STATUS_KO = {
 }
 
 
+CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Curate fetched Confluence metadata into Korean Markdown.")
     parser.add_argument("--input", required=True)
@@ -362,7 +366,7 @@ def build_topic_insight_lines(
     insights = insights_payload.get("insights", [])
     lines.append("## 주제별 인사이트")
     if not insights:
-        lines.append("- 생성된 topic insight 가 없습니다.")
+        lines.append("- 생성된 주제별 인사이트가 없습니다.")
         lines.append("")
         return lines
 
@@ -370,10 +374,13 @@ def build_topic_insight_lines(
         review = review_lookup.get(insight.get("topic_id"), {})
         lines.append(f"### {insight.get('label') or insight.get('topic_id')}")
         lines.append(f"- 결론: {insight.get('conclusion')}")
+        insight_confidence = insight.get("confidence_ko") or CONFIDENCE_KO.get(insight.get("confidence", ""), "알 수 없음")
+        review_confidence = review.get("adjusted_confidence_ko") or CONFIDENCE_KO.get(review.get("adjusted_confidence", ""), "알 수 없음")
+        review_verdict = review.get("verdict_ko") or VERDICT_KO.get(review.get("verdict", ""), review.get("verdict", "알 수 없음"))
         lines.append(
-            f"- 확신도: {insight.get('confidence', 'unknown')}"
+            f"- 확신도: {insight_confidence}"
             + (
-                f" -> review 후 {review.get('adjusted_confidence')} ({review.get('verdict')})"
+                f" -> 검토 후 {review_confidence} ({review_verdict})"
                 if review
                 else ""
             )
@@ -460,7 +467,7 @@ def build_markdown(
                 f"### {item['title']} ({item.get('space_key') or 'space 미상'})"
             )
             lines.append(
-                f"- 신뢰도 {item['trust_score']}, 최신성 {item['freshness_score']}, 확신도 {item['confidence_level']}"
+                f"- 신뢰도 {item['trust_score']}, 최신성 {item['freshness_score']}, 확신도 {CONFIDENCE_KO.get(item['confidence_level'], item['confidence_level'])}"
             )
             for point in item["points"]:
                 lines.append(f"- {point}")

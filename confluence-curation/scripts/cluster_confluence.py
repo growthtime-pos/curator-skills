@@ -242,7 +242,7 @@ def build_clusters(
                         evidence_types.add(reason.split("=", 1)[0])
 
         average_score = sum(edge.get("score", 0.0) for edge in pair_links) / len(pair_links) if pair_links else 0.0
-        label = current_page.get("title") if len(cluster_pages) > 1 else f"single::{current_page.get('title')}"
+        label = current_page.get("title")
         cluster_id = f"topic_{multi_page_index:03d}" if len(cluster_pages) > 1 else f"singleton_{current_page.get('page_id')}"
         if len(cluster_pages) > 1:
             multi_page_index += 1

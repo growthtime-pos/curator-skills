@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 
+CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
@@ -163,7 +166,7 @@ def summarize_changes(cluster_pages: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "title": page.get("title"),
                     "updated_at": page.get("updated_at"),
                     "kind": "page_update",
-                    "summary": f"{page.get('title')} updated at {page.get('updated_at')}",
+                    "summary": f"{page.get('title')} 문서가 {page.get('updated_at')} 에 갱신되었습니다.",
                 }
             )
         for event in page.get("version_events", [])[:3]:
@@ -175,7 +178,10 @@ def summarize_changes(cluster_pages: List[Dict[str, Any]]) -> List[Dict[str, Any
                         "title": page.get("title"),
                         "updated_at": event.get("updated_at"),
                         "kind": "version_event",
-                        "summary": f"{page.get('title')} version {event.get('version')} {message}".strip(),
+                        "summary": (
+                            f"{page.get('title')} 버전 {event.get('version')} 이 {event.get('updated_at')} 에 기록되었습니다."
+                            + (f" 변경 메모: {message}" if message else "")
+                        ),
                     }
                 )
     changes.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
@@ -189,19 +195,19 @@ def conflict_notes(cluster: Dict[str, Any], cluster_pages: List[Dict[str, Any]],
     stale = candidates.get("stale")
 
     if cluster.get("page_count", 0) > 1:
-        notes.append(f"cluster contains {cluster.get('page_count')} related pages")
+        notes.append(f"연관된 페이지 {cluster.get('page_count')}개가 하나의 클러스터로 묶였습니다.")
     if current and trusted and current.get("page_id") != trusted.get("page_id"):
-        notes.append("current candidate and trusted candidate differ")
+        notes.append("현재 기준 후보와 신뢰 기준 후보가 서로 다릅니다.")
     if stale:
-        notes.append(f"stale candidate present: {stale.get('title')}")
+        notes.append(f"오래된 문서 후보로 `{stale.get('title')}` 가 확인됩니다.")
     if cluster.get("confidence") == "low" and cluster.get("page_count", 0) > 1:
-        notes.append("cluster confidence is low despite multiple related pages")
+        notes.append("연관 페이지가 여러 개지만 클러스터 확신도는 낮습니다.")
 
     keywords = [set(page.get("keywords", [])) for page in cluster_pages]
     if keywords and len(keywords) > 1:
         shared = set.intersection(*keywords) if len(keywords) > 1 else set()
         if len(shared) <= 1 and cluster.get("page_count", 0) > 1:
-            notes.append("related pages have weak keyword overlap")
+            notes.append("연관 페이지들 사이의 핵심 키워드 겹침이 약합니다.")
     return notes
 
 
@@ -210,9 +216,9 @@ def collect_missing_signals(cluster_pages: List[Dict[str, Any]], global_missing:
     filtered = [item for item in global_missing if any(page_id in item for page_id in page_ids if page_id)]
     for page in cluster_pages:
         if not page.get("body_excerpt"):
-            filtered.append(f"page {page.get('page_id')} has no body excerpt")
+            filtered.append(f"페이지 {page.get('page_id')} 에는 본문 excerpt 가 없습니다.")
         if not page.get("recent_contributors"):
-            filtered.append(f"page {page.get('page_id')} has no recent contributors")
+            filtered.append(f"페이지 {page.get('page_id')} 에는 최근 기여자 정보가 없습니다.")
     return sorted(set(filtered))
 
 
@@ -261,6 +267,7 @@ def build_evidence_pack(
         "topic_id": cluster.get("cluster_id"),
         "label": cluster.get("label"),
         "confidence": cluster.get("confidence"),
+        "confidence_ko": CONFIDENCE_KO.get(cluster.get("confidence"), "알 수 없음"),
         "page_ids": cluster.get("page_ids", []),
         "current_candidate": page_summary(candidates.get("current"), max_snippets),
         "trusted_candidate": page_summary(candidates.get("trusted"), max_snippets),

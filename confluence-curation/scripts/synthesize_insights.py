@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
+CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
@@ -167,6 +170,7 @@ def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int) 
         "label": pack.get("label"),
         "conclusion": conclusion,
         "confidence": confidence,
+        "confidence_ko": CONFIDENCE_KO.get(confidence, "알 수 없음"),
         "current_reference": summarize_candidate(pack.get("current_candidate")),
         "background_reference": summarize_candidate(pack.get("trusted_candidate")),
         "stale_reference": summarize_candidate(pack.get("stale_candidate")),

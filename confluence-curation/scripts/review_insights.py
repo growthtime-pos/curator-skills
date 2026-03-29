@@ -8,6 +8,17 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
+CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+SEVERITY_KO = {"pass": "통과", "warn": "주의", "fail": "실패"}
+REVIEWER_KO = {
+    "freshness": "최신성 검토",
+    "trust": "신뢰도 검토",
+    "contradiction": "충돌 검토",
+    "executive": "실행 관점 검토",
+}
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
@@ -53,7 +64,9 @@ def freshness_review(insight: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "reviewer": "freshness",
+        "reviewer_ko": REVIEWER_KO["freshness"],
         "severity": severity,
+        "severity_ko": SEVERITY_KO[severity],
         "findings": findings,
     }
 
@@ -87,7 +100,9 @@ def trust_review(insight: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "reviewer": "trust",
+        "reviewer_ko": REVIEWER_KO["trust"],
         "severity": severity,
+        "severity_ko": SEVERITY_KO[severity],
         "findings": findings,
     }
 
@@ -112,7 +127,9 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "reviewer": "contradiction",
+        "reviewer_ko": REVIEWER_KO["contradiction"],
         "severity": severity,
+        "severity_ko": SEVERITY_KO[severity],
         "findings": findings,
     }
 
@@ -136,7 +153,9 @@ def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "reviewer": "executive",
+        "reviewer_ko": REVIEWER_KO["executive"],
         "severity": severity,
+        "severity_ko": SEVERITY_KO[severity],
         "findings": findings,
     }
 
@@ -188,8 +207,11 @@ def review_topic(insight: Dict[str, Any]) -> Dict[str, Any]:
         "topic_id": insight.get("topic_id"),
         "label": insight.get("label"),
         "original_confidence": insight.get("confidence"),
+        "original_confidence_ko": CONFIDENCE_KO.get(insight.get("confidence"), "알 수 없음"),
         "adjusted_confidence": adjusted_confidence,
+        "adjusted_confidence_ko": CONFIDENCE_KO.get(adjusted_confidence, "알 수 없음"),
         "verdict": verdict,
+        "verdict_ko": VERDICT_KO[verdict],
         "requires_follow_up": requires_follow_up,
         "reviewers": reviews,
         "recommended_actions": insight.get("suggested_actions", []),
