@@ -64,16 +64,16 @@ def derive_conclusion(pack: Dict[str, Any]) -> str:
     stale = pack.get("stale_candidate")
 
     if current and trusted and current.get("page_id") == trusted.get("page_id"):
-        return f"Use `{current.get('title')}` as the current working reference for this topic."
+        return f"이 주제의 현재 작업 기준 문서로는 `{current.get('title')}` 를 우선 참고하는 것이 적절합니다."
     if current and trusted:
         return (
-            f"Use `{current.get('title')}` for current execution, but keep `{trusted.get('title')}` as background or policy context."
+            f"현재 실행 기준은 `{current.get('title')}` 를 우선 보고, 배경 정책이나 문맥은 `{trusted.get('title')}` 를 함께 참고하는 편이 좋습니다."
         )
     if current:
-        return f"`{current.get('title')}` is the best available working reference, but supporting context is limited."
+        return f"현재 기준으로는 `{current.get('title')}` 가 가장 유력한 작업 기준 문서지만, 보강 근거는 제한적입니다."
     if stale:
-        return f"Only stale evidence is available, led by `{stale.get('title')}`, so this topic needs verification before reuse."
-    return "This topic lacks enough evidence to identify a reliable working reference."
+        return f"`{stale.get('title')}` 중심의 오래된 근거만 있어, 재사용 전에 추가 검증이 필요합니다."
+    return "이 주제는 신뢰할 만한 작업 기준 문서를 고를 만큼 근거가 충분하지 않습니다."
 
 
 def derive_change_summary(pack: Dict[str, Any]) -> List[str]:
@@ -90,7 +90,7 @@ def derive_gap_summary(pack: Dict[str, Any]) -> List[str]:
     for note in pack.get("missing_signals", [])[:3]:
         gaps.append(note)
     if not pack.get("evidence_snippets"):
-        gaps.append("No evidence snippets were extracted for this topic.")
+        gaps.append("이 주제에서는 인용 가능한 근거 문장을 추출하지 못했습니다.")
     return gaps
 
 
@@ -104,19 +104,19 @@ def derive_actions(pack: Dict[str, Any], max_actions: int) -> List[str]:
 
     if current and trusted and current.get("page_id") != trusted.get("page_id"):
         actions.append(
-            f"Review whether `{current.get('title')}` should link to or absorb policy context from `{trusted.get('title')}`."
+            f"`{current.get('title')}` 에 `{trusted.get('title')}` 의 정책/배경 문맥을 링크하거나 통합할지 검토하세요."
         )
     if stale:
-        actions.append(f"Check whether `{stale.get('title')}` should be archived, redirected, or updated.")
+        actions.append(f"`{stale.get('title')}` 를 아카이브, 리다이렉트, 또는 업데이트할지 확인하세요.")
     if conflict_notes:
-        actions.append("Review overlapping pages and document the official current-vs-background split.")
+        actions.append("겹치는 문서들을 검토하고 현재 기준 문서와 배경 문서를 어떻게 나눌지 명시하세요.")
     if maintainers:
         top = maintainers[0]
         actions.append(
-            f"Ask `{top.get('display_name')}` to confirm ownership and accuracy for this topic cluster."
+            f"`{top.get('display_name')}` 에게 이 주제 클러스터의 소유자와 정확성을 확인해 달라고 요청하세요."
         )
     if pack.get("missing_signals"):
-        actions.append("Collect missing profile or body evidence before treating this topic as authoritative.")
+        actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
 
     deduped: List[str] = []
     for action in actions:

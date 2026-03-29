@@ -38,18 +38,18 @@ def freshness_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     stale_days = stale.get("updated_days_ago")
 
     if current_days is None:
-        findings.append("Current reference has no recency signal.")
+        findings.append("현재 기준 문서에 최신성 신호가 없습니다.")
         severity = "warn"
     elif current_days > 90:
-        findings.append("Current reference looks old for a working document.")
+        findings.append("현재 기준 문서가 작업 기준 문서치고는 오래되어 보입니다.")
         severity = "warn"
 
     if stale and stale_days is not None and current_days is not None and stale_days < current_days:
-        findings.append("A stale-designated page appears newer than the current reference.")
+        findings.append("오래된 문서로 분류된 페이지가 현재 기준 문서보다 더 최신으로 보입니다.")
         severity = "fail"
 
     if not findings:
-        findings.append("Freshness signals are directionally consistent.")
+        findings.append("최신성 신호는 전반적으로 일관됩니다.")
 
     return {
         "reviewer": "freshness",
@@ -68,22 +68,22 @@ def trust_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     background_trust = background.get("trust_score")
 
     if current and current_trust is None:
-        findings.append("Current reference has no trust score.")
+        findings.append("현재 기준 문서에 신뢰도 점수가 없습니다.")
         severity = "warn"
     if background and background_trust is None:
-        findings.append("Background reference has no trust score.")
+        findings.append("배경 참고 문서에 신뢰도 점수가 없습니다.")
         severity = "warn"
     if current and background and current.get("page_id") != background.get("page_id"):
         if current_trust is not None and background_trust is not None and background_trust > current_trust + 10:
-            findings.append("Background reference is materially more trusted than the current reference.")
+            findings.append("배경 참고 문서가 현재 기준 문서보다 의미 있게 더 신뢰됩니다.")
             severity = "warn"
 
     if not insight.get("evidence_page_ids"):
-        findings.append("No evidence pages are cited for this insight.")
+        findings.append("이 인사이트에는 근거 페이지가 인용되지 않았습니다.")
         severity = "fail"
 
     if not findings:
-        findings.append("Trust signals are present and tied to cited pages.")
+        findings.append("신뢰 신호가 존재하고 인용된 페이지와 연결되어 있습니다.")
 
     return {
         "reviewer": "trust",
@@ -104,11 +104,11 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
         current = insight["current_reference"]
         background = insight["background_reference"]
         if current.get("page_id") != background.get("page_id") and not conflicts:
-            findings.append("Current and background references differ but no explicit conflict note is present.")
+            findings.append("현재 기준 문서와 배경 참고 문서가 다르지만 충돌 메모가 명시되지 않았습니다.")
             severity = "warn"
 
     if not findings:
-        findings.append("No unresolved contradiction signals were detected.")
+        findings.append("해결되지 않은 충돌 신호는 뚜렷하지 않습니다.")
 
     return {
         "reviewer": "contradiction",
@@ -122,17 +122,17 @@ def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     severity = "pass"
 
     if not insight.get("suggested_actions"):
-        findings.append("Insight does not include actionable next steps.")
+        findings.append("인사이트에 실행 가능한 다음 조치가 없습니다.")
         severity = "warn"
     if not insight.get("evidence_gaps") and confidence_rank(insight.get("confidence", "low")) <= 1:
-        findings.append("Low-confidence insight does not explain its evidence gaps.")
+        findings.append("낮은 확신도의 인사이트인데 근거 공백 설명이 없습니다.")
         severity = "warn"
     if not insight.get("conclusion"):
-        findings.append("Insight has no explicit conclusion.")
+        findings.append("인사이트에 명시적인 결론이 없습니다.")
         severity = "fail"
 
     if not findings:
-        findings.append("Insight is concise and action-oriented.")
+        findings.append("인사이트가 간결하고 실행 지향적으로 정리되어 있습니다.")
 
     return {
         "reviewer": "executive",
