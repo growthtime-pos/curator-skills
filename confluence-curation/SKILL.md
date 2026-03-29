@@ -105,6 +105,35 @@ When the user asks for deeper insight analysis, also produce:
 - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --output /tmp/confluence.md`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
+## End-To-End Insight Pipeline Example
+
+Use the staged pipeline when you want topic-level insight instead of only page ranking.
+
+1. Fetch raw data:
+   - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --include-body --output /tmp/confluence.json`
+2. Normalize the fetched corpus:
+   - `python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/confluence.json --output /tmp/normalized.json`
+3. Cluster related pages into topics:
+   - `python3 confluence-curation/scripts/cluster_confluence.py --input /tmp/normalized.json --output /tmp/clusters.json`
+4. Build evidence packs:
+   - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input /tmp/normalized.json --clusters-input /tmp/clusters.json --output-dir /tmp/evidence --emit-manifest /tmp/evidence-manifest.json`
+5. Synthesize topic insights:
+   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest /tmp/evidence-manifest.json --output /tmp/insights.json`
+6. Run the second-pass review:
+   - `python3 confluence-curation/scripts/review_insights.py --input /tmp/insights.json --output /tmp/review.json`
+7. Render the final Markdown report:
+   - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --insights-input /tmp/insights.json --review-input /tmp/review.json --output /tmp/confluence-report.md --emit-json-summary /tmp/confluence-summary.json`
+
+Recommended artifact layout:
+- `/tmp/confluence.json`
+- `/tmp/normalized.json`
+- `/tmp/clusters.json`
+- `/tmp/evidence/`
+- `/tmp/evidence-manifest.json`
+- `/tmp/insights.json`
+- `/tmp/review.json`
+- `/tmp/confluence-report.md`
+
 ## Exit Criteria
 
 Before finishing:

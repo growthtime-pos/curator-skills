@@ -78,8 +78,9 @@
   ```
 - End-to-end manual test pattern:
   1. Run `fetch_confluence.py` with a small scope and `--output tmp/fetch.json`.
-  2. Run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
-  3. Inspect the JSON and Markdown for schema and content regressions.
+  2. For the legacy flow, run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
+  3. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py`, `extract_evidence.py`, `synthesize_insights.py`, `review_insights.py`, then `curate_confluence.py --insights-input ... --review-input ...`.
+  4. Inspect the JSON and Markdown for schema and content regressions.
 
 ## Running A Single Test
 
