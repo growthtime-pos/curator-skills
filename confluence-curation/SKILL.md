@@ -123,6 +123,8 @@ Use the staged pipeline when you want topic-level insight instead of only page r
    - `python3 confluence-curation/scripts/review_insights.py --input /tmp/insights.json --output /tmp/review.json`
 7. Render the final Markdown report:
    - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --insights-input /tmp/insights.json --review-input /tmp/review.json --output /tmp/confluence-report.md --emit-json-summary /tmp/confluence-summary.json`
+8. Run the fixture-based smoke test when changing the staged pipeline:
+   - `python3 confluence-curation/scripts/smoke_pipeline.py`
 
 Recommended artifact layout:
 - `/tmp/confluence.json`

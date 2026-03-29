@@ -69,6 +69,10 @@
   ```bash
   python confluence-curation/scripts/curate_confluence.py --help
   ```
+- Fixture-based staged pipeline smoke test:
+  ```bash
+  python confluence-curation/scripts/smoke_pipeline.py
+  ```
 - Syntax-check a single file:
   ```bash
   python -m py_compile confluence-curation/scripts/fetch_confluence.py
@@ -81,12 +85,14 @@
   2. For the legacy flow, run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
   3. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py`, `extract_evidence.py`, `synthesize_insights.py`, `review_insights.py`, then `curate_confluence.py --insights-input ... --review-input ...`.
   4. Inspect the JSON and Markdown for schema and content regressions.
+  5. For a fast regression check, prefer `python confluence-curation/scripts/smoke_pipeline.py`.
 
 ## Running A Single Test
 
 - There is no single-test command in the repo because there is no checked-in unit test suite.
 - For a single-file validation, use `python -m py_compile <file>`.
 - For a single behavior check, run the specific script with the smallest relevant CLI invocation.
+- For a single end-to-end staged-pipeline regression, use `python confluence-curation/scripts/smoke_pipeline.py`.
 - If a pytest suite is added later, prefer `python -m pytest path/to/test_file.py::test_name`.
 
 ## Imports
