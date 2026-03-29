@@ -1,13 +1,13 @@
 ---
 name: confluence-curation
-description: Fetch Confluence pages and edit history, then curate which documents are most current, most trustworthy, and how related documents changed over time. Use when comparing overlapping Confluence docs, identifying likely source-of-truth candidates, ranking documents by freshness and trust signals, or summarizing document evolution with author team/title context from Confluence profiles.
+description: Fetch Confluence pages and edit history, then curate which documents are most current, most trustworthy, and what insight clusters, conflicts, and action items emerge across related pages. Use when comparing overlapping Confluence docs, identifying likely source-of-truth candidates, ranking documents by freshness and trust signals, or synthesizing topic-level insights from Confluence history and profile context.
 ---
 
 # Confluence Curation
 
 ## Overview
 
-Use this skill to turn a messy set of Confluence pages into a readable curation view.
+Use this skill to turn a messy set of Confluence pages into a readable curation and insight view.
 
 The goal is not to declare one document as absolute truth.
 The goal is to show:
@@ -15,6 +15,7 @@ The goal is to show:
 - which pages look more trustworthy
 - which pages appear stale, duplicated, or superseded
 - how related pages changed over time
+- which topic clusters have meaningful conflicts, gaps, or follow-up actions
 
 This skill assumes Confluence often lacks reliable labels or formal approval state.
 When that happens, use author and editor context as a heuristic, not as a hard rule.
@@ -27,9 +28,29 @@ When that happens, use author and editor context as a heuristic, not as a hard r
    - optional date window
 2. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
 3. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
-4. Run `scripts/curate_confluence.py` on the fetched JSON.
-5. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
-6. Call out ambiguity explicitly instead of hiding it.
+4. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
+5. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
+6. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
+7. Run `scripts/curate_confluence.py` on the fetched JSON.
+8. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
+9. Call out ambiguity explicitly instead of hiding it.
+
+## Staged Insight Workflow
+
+When the user wants more than page ranking, use a staged workflow inspired by artifact-first analysis systems.
+
+1. Fetch and normalize raw Confluence data.
+2. Cluster related pages into topic groups.
+3. Build evidence packs for each topic:
+   - current candidate page
+   - trusted background page
+   - conflicting claims or duplicate pages
+   - recent changes and likely maintainers
+4. Synthesize topic-level insights with explicit evidence.
+5. Run a second-pass review over freshness, trust, contradiction, and actionability.
+6. Produce a final Korean report with confidence and open questions.
+
+Prefer saving intermediate artifacts instead of hiding all reasoning inside one final summary.
 
 ## Core Judgment Rules
 
@@ -40,6 +61,8 @@ When that happens, use author and editor context as a heuristic, not as a hard r
 - A recent page is not automatically the best source of truth.
 - An older page may still be useful if it is heavily referenced and still maintained.
 - If evidence conflicts, report the conflict directly.
+- Every major insight should point back to specific pages and short evidence snippets.
+- If a topic cannot be resolved confidently, produce the disagreement instead of forcing a winner.
 
 ## Operational Rules
 
@@ -54,6 +77,7 @@ When that happens, use author and editor context as a heuristic, not as a hard r
 - Use `--cache-dir` to persist fetched results locally and reuse them later.
 - Use `--cache-only` to work from saved data without making new API calls.
 - Use `--refresh-cache` when the saved data should be ignored and fetched again.
+- Keep fetched artifacts, normalized artifacts, and final reports separate so later passes can reuse them.
 
 ## Output Requirements
 
@@ -61,10 +85,17 @@ Always produce:
 - a short Korean summary of the current best candidates
 - a Korean synthesis of the underlying content when body text is available
 - a section showing the most trustworthy data cleaned up into readable bullets
+- a topic-level insight section with conflicts, gaps, or action items when enough evidence exists
 - a table of candidate pages
 - a timeline or ordered change flow
 - explicit warning flags
 - a final recommendation with uncertainty noted
+
+When the user asks for deeper insight analysis, also produce:
+- topic clusters or comparable document groups
+- evidence-backed conflict notes
+- likely owner or maintainer signals
+- suggested next actions for cleanup, migration, or verification
 
 ## Example Invocations
 
@@ -74,11 +105,43 @@ Always produce:
 - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --output /tmp/confluence.md`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
+## End-To-End Insight Pipeline Example
+
+Use the staged pipeline when you want topic-level insight instead of only page ranking.
+
+1. Fetch raw data:
+   - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --include-body --output /tmp/confluence.json`
+2. Normalize the fetched corpus:
+   - `python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/confluence.json --output /tmp/normalized.json`
+3. Cluster related pages into topics:
+   - `python3 confluence-curation/scripts/cluster_confluence.py --input /tmp/normalized.json --output /tmp/clusters.json`
+4. Build evidence packs:
+   - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input /tmp/normalized.json --clusters-input /tmp/clusters.json --output-dir /tmp/evidence --emit-manifest /tmp/evidence-manifest.json`
+5. Synthesize topic insights:
+   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest /tmp/evidence-manifest.json --output /tmp/insights.json`
+6. Run the second-pass review:
+   - `python3 confluence-curation/scripts/review_insights.py --input /tmp/insights.json --output /tmp/review.json`
+7. Render the final Markdown report:
+   - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --insights-input /tmp/insights.json --review-input /tmp/review.json --output /tmp/confluence-report.md --emit-json-summary /tmp/confluence-summary.json`
+8. Run the fixture-based smoke test when changing the staged pipeline:
+   - `python3 confluence-curation/scripts/smoke_pipeline.py`
+
+Recommended artifact layout:
+- `/tmp/confluence.json`
+- `/tmp/normalized.json`
+- `/tmp/clusters.json`
+- `/tmp/evidence/`
+- `/tmp/evidence-manifest.json`
+- `/tmp/insights.json`
+- `/tmp/review.json`
+- `/tmp/confluence-report.md`
+
 ## Exit Criteria
 
 Before finishing:
 - confirm the scope of pages reviewed
 - confirm what signals were available
 - separate freshness from trust
+- separate page-level evidence from topic-level insight
 - state uncertainty clearly
 - avoid claiming a definitive source of truth unless the evidence is strong

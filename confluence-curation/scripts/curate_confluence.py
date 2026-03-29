@@ -21,10 +21,16 @@ STATUS_KO = {
 }
 
 
+CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Curate fetched Confluence metadata into Korean Markdown.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--insights-input")
+    parser.add_argument("--review-input")
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--recent-days-strong", type=int, default=30)
     parser.add_argument("--recent-days-medium", type=int, default=90)
@@ -34,6 +40,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--relationship-weight", type=float, default=25.0)
     parser.add_argument("--emit-json-summary")
     return parser.parse_args()
+
+
+def read_json(path: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not path:
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -331,6 +344,77 @@ def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings:
     return lines
 
 
+def build_review_lookup(review_payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    if not review_payload:
+        return {}
+    return {
+        item.get("topic_id"): item
+        for item in review_payload.get("reviews", [])
+        if item.get("topic_id")
+    }
+
+
+def build_topic_insight_lines(
+    insights_payload: Optional[Dict[str, Any]],
+    review_payload: Optional[Dict[str, Any]],
+) -> List[str]:
+    lines: List[str] = []
+    if not insights_payload:
+        return lines
+
+    review_lookup = build_review_lookup(review_payload)
+    insights = insights_payload.get("insights", [])
+    lines.append("## 주제별 인사이트")
+    if not insights:
+        lines.append("- 생성된 주제별 인사이트가 없습니다.")
+        lines.append("")
+        return lines
+
+    for insight in insights[:10]:
+        review = review_lookup.get(insight.get("topic_id"), {})
+        lines.append(f"### {insight.get('label') or insight.get('topic_id')}")
+        lines.append(f"- 결론: {insight.get('conclusion')}")
+        insight_confidence = insight.get("confidence_ko") or CONFIDENCE_KO.get(insight.get("confidence", ""), "알 수 없음")
+        review_confidence = review.get("adjusted_confidence_ko") or CONFIDENCE_KO.get(review.get("adjusted_confidence", ""), "알 수 없음")
+        review_verdict = review.get("verdict_ko") or VERDICT_KO.get(review.get("verdict", ""), review.get("verdict", "알 수 없음"))
+        lines.append(
+            f"- 확신도: {insight_confidence}"
+            + (
+                f" -> 검토 후 {review_confidence} ({review_verdict})"
+                if review
+                else ""
+            )
+        )
+
+        current = insight.get("current_reference") or {}
+        background = insight.get("background_reference") or {}
+        stale = insight.get("stale_reference") or {}
+        if current:
+            lines.append(f"- 현재 작업 기준 문서: `{current.get('title')}`")
+        if background and background.get("page_id") != current.get("page_id"):
+            lines.append(f"- 배경 참고 문서: `{background.get('title')}`")
+        if stale:
+            lines.append(f"- 오래된 참고 후보: `{stale.get('title')}`")
+
+        for note in (insight.get("conflict_notes") or [])[:2]:
+            lines.append(f"- 충돌 또는 중복 신호: {note}")
+        for change in (insight.get("recent_change_summary") or [])[:2]:
+            lines.append(f"- 최근 의미 있는 변화: {change}")
+        for action in (insight.get("suggested_actions") or [])[:2]:
+            lines.append(f"- 권장 후속 조치: {action}")
+        if insight.get("evidence_gaps"):
+            lines.append(f"- 근거 공백: {insight['evidence_gaps'][0]}")
+        if review and review.get("requires_follow_up"):
+            reviewer_notes = []
+            for reviewer in review.get("reviewers", []):
+                if reviewer.get("severity") in {"warn", "fail"}:
+                    reviewer_notes.extend(reviewer.get("findings", [])[:1])
+            for note in reviewer_notes[:2]:
+                lines.append(f"- 검토 메모: {note}")
+        lines.append("")
+    return lines
+
+
 def build_markdown(
     meta: Dict[str, Any],
     pages: List[Dict[str, Any]],
@@ -340,6 +424,8 @@ def build_markdown(
     trusted_data: List[Dict[str, Any]],
     synthesized_overview: List[str],
     warnings: List[str],
+    insights_payload: Optional[Dict[str, Any]] = None,
+    review_payload: Optional[Dict[str, Any]] = None,
 ) -> str:
     best_current = max(scored_pages, key=lambda item: item["freshness_score"], default=None)
     best_trust = max(scored_pages, key=lambda item: item["trust_score"], default=None)
@@ -362,6 +448,10 @@ def build_markdown(
         lines.append("- 프로필 정보 또는 API 제한 때문에 일부 문서는 확신이 낮습니다.")
     lines.append("")
 
+    topic_lines = build_topic_insight_lines(insights_payload, review_payload)
+    if topic_lines:
+        lines.extend(topic_lines)
+
     lines.append("## 정리된 핵심 내용")
     if synthesized_overview:
         for sentence in synthesized_overview:
@@ -377,7 +467,7 @@ def build_markdown(
                 f"### {item['title']} ({item.get('space_key') or 'space 미상'})"
             )
             lines.append(
-                f"- 신뢰도 {item['trust_score']}, 최신성 {item['freshness_score']}, 확신도 {item['confidence_level']}"
+                f"- 신뢰도 {item['trust_score']}, 최신성 {item['freshness_score']}, 확신도 {CONFIDENCE_KO.get(item['confidence_level'], item['confidence_level'])}"
             )
             for point in item["points"]:
                 lines.append(f"- {point}")
@@ -438,6 +528,8 @@ def main() -> int:
     args = parse_args()
     with open(args.input, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
+    insights_payload = read_json(args.insights_input)
+    review_payload = read_json(args.review_input)
 
     meta = payload.get("meta", {})
     pages = payload.get("pages", [])
@@ -544,6 +636,8 @@ def main() -> int:
         trusted_data,
         synthesized_overview,
         warnings,
+        insights_payload,
+        review_payload,
     )
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as handle:
@@ -569,6 +663,8 @@ def main() -> int:
                 for cluster in clusters
             ],
             "trusted_data": trusted_data,
+            "insights_summary": (insights_payload or {}).get("summary"),
+            "review_summary": (review_payload or {}).get("summary"),
             "timeline": timeline[:50],
             "warnings": warnings,
         }
