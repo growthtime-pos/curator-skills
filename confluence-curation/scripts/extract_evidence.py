@@ -304,7 +304,7 @@ def main() -> int:
             args.max_snippets,
             args.max_maintainers,
         )
-        output_path = os.path.join(args.output_dir, f"{pack['topic_id']}.json")
+        output_path = os.path.abspath(os.path.join(args.output_dir, f"{pack['topic_id']}.json"))
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(pack, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
