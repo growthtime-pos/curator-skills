@@ -20,6 +20,33 @@ The goal is to show:
 This skill assumes Confluence often lacks reliable labels or formal approval state.
 When that happens, use author and editor context as a heuristic, not as a hard rule.
 
+## 연결 설정 (최초 1회)
+
+연결 정보를 로컬에 저장해두면 매번 입력할 필요가 없습니다.
+
+```bash
+python3 confluence-curation/scripts/configure_confluence.py set \
+  base_url=https://wiki.example.com \
+  username=user1 \
+  password=mypassword \
+  insecure=true
+```
+
+설정 가능한 키: `base_url`, `deployment_type`, `email`, `username`, `api_token`, `password`, `insecure`, `cache_dir`, `cache_ttl_hours`, `rate_limit_rps`
+
+설정 파일은 `~/.confluence-curation.json`에 저장되며, 환경변수나 CLI 플래그가 있으면 설정 파일보다 우선합니다. 우선순위: CLI 플래그 > 환경변수 > 설정 파일
+
+```bash
+# 현재 설정 확인
+python3 confluence-curation/scripts/configure_confluence.py show
+
+# 특정 키 삭제
+python3 confluence-curation/scripts/configure_confluence.py delete password
+
+# 설정 전체 삭제
+python3 confluence-curation/scripts/configure_confluence.py clear
+```
+
 ## Default Workflow
 
 1. Define the scope first:
