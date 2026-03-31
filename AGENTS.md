@@ -19,6 +19,7 @@
 - `confluence-curation/SKILL.md` defines the skill contract, workflow, and output expectations.
 - `confluence-curation/agents/openai.yaml` contains the agent-facing metadata and default prompt.
 - `confluence-curation/scripts/fetch_confluence.py` is the networked data collection CLI.
+- `confluence-curation/scripts/configure_confluence.py` is the local credential and connection config manager.
 - `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator.
 - `confluence-curation/references/` contains prompt, scoring, architecture, and review references, not executable code.
 - `confluence-curation/scripts/__pycache__/` is generated output and should not be edited by hand.
