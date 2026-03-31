@@ -62,13 +62,16 @@ python3 confluence-curation/scripts/expand_keywords.py \
   --input /tmp/fetch-r1.json --original-query "deploy" \
   --output /tmp/keyword-expansion.json
 
-# Round 2: 확장된 키워드로 추가 검색
+# Round 2: 승인된 키워드별 추가 검색
 python3 confluence-curation/scripts/fetch_confluence.py \
-  --query "rollback|release|canary" --include-body --output /tmp/fetch-r2.json
+  --query "rollback" --include-body --output /tmp/fetch-r2a.json
+python3 confluence-curation/scripts/fetch_confluence.py \
+  --query "release" --include-body --output /tmp/fetch-r2b.json
 
 # 결과 병합
 python3 confluence-curation/scripts/merge_fetched.py \
-  --inputs /tmp/fetch-r1.json /tmp/fetch-r2.json --output /tmp/fetch-merged.json
+  --inputs /tmp/fetch-r1.json /tmp/fetch-r2a.json /tmp/fetch-r2b.json \
+  --output /tmp/fetch-merged.json
 ```
 
 ### 4. 전체 인사이트 파이프라인

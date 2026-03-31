@@ -148,13 +148,14 @@ python3 confluence-curation/scripts/fetch_confluence.py --query "deploy" --inclu
 # Discover expanded keywords
 python3 confluence-curation/scripts/expand_keywords.py --input /tmp/fetch-r1.json --original-query "deploy" --output /tmp/keyword-expansion.json
 
-# (Agent presents candidates to user for approval)
+# (Agent reads suggested_terms and presents candidates to user for approval)
 
-# Round 2: expanded search
-python3 confluence-curation/scripts/fetch_confluence.py --query "rollback|release|canary" --include-body --output /tmp/fetch-r2.json
+# Round 2: one fetch per approved keyword
+python3 confluence-curation/scripts/fetch_confluence.py --query "rollback" --include-body --output /tmp/fetch-r2a.json
+python3 confluence-curation/scripts/fetch_confluence.py --query "release" --include-body --output /tmp/fetch-r2b.json
 
-# Merge both rounds
-python3 confluence-curation/scripts/merge_fetched.py --inputs /tmp/fetch-r1.json /tmp/fetch-r2.json --output /tmp/fetch-merged.json
+# Merge all rounds
+python3 confluence-curation/scripts/merge_fetched.py --inputs /tmp/fetch-r1.json /tmp/fetch-r2a.json /tmp/fetch-r2b.json --output /tmp/fetch-merged.json
 
 # Continue pipeline with merged output
 python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/fetch-merged.json --output /tmp/normalized.json

@@ -65,8 +65,10 @@ def assert_keyword_expansion_shape(workdir: Path) -> None:
     expansion = read_json(workdir / "keyword-expansion.json")
     if "candidates" not in expansion:
         raise RuntimeError("키워드 확장 결과에 candidates 필드가 없습니다.")
-    if "suggested_query" not in expansion:
-        raise RuntimeError("키워드 확장 결과에 suggested_query 필드가 없습니다.")
+    if "suggested_terms" not in expansion:
+        raise RuntimeError("키워드 확장 결과에 suggested_terms 필드가 없습니다.")
+    if "suggested_cql" not in expansion:
+        raise RuntimeError("키워드 확장 결과에 suggested_cql 필드가 없습니다.")
     if not expansion["candidates"]:
         raise RuntimeError("키워드 확장 후보가 비어 있습니다.")
     first = expansion["candidates"][0]

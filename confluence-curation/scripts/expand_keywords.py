@@ -184,9 +184,15 @@ def parse_original_terms(query: str) -> List[str]:
     return [term.strip().lower() for term in re.split(r"\s*\|\s*|,", query) if term.strip()]
 
 
-def build_suggested_query(candidates: List[Dict[str, Any]], max_terms: int) -> str:
-    top = candidates[:max_terms]
-    return "|".join(c["keyword"] for c in top)
+def build_suggested_terms(candidates: List[Dict[str, Any]], max_terms: int) -> List[str]:
+    return [c["keyword"] for c in candidates[:max_terms]]
+
+
+def build_suggested_cql(terms: List[str]) -> str:
+    if not terms:
+        return ""
+    clauses = [f'(text ~ "{t}" or title ~ "{t}")' for t in terms]
+    return " or ".join(clauses)
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,7 +241,8 @@ def main() -> int:
     candidates = score_candidates(pages, original_terms, args.min_frequency)
     candidates = candidates[: args.max_candidates]
 
-    suggested_query = build_suggested_query(candidates, MAX_SUGGESTED_TERMS)
+    suggested_terms = build_suggested_terms(candidates, MAX_SUGGESTED_TERMS)
+    suggested_cql = build_suggested_cql(suggested_terms)
 
     warnings: List[str] = []
     if not candidates:
@@ -251,7 +258,8 @@ def main() -> int:
         },
         "original_terms": original_terms,
         "candidates": candidates,
-        "suggested_query": suggested_query,
+        "suggested_terms": suggested_terms,
+        "suggested_cql": suggested_cql,
         "warnings": warnings,
     }
 

@@ -15,6 +15,19 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
+def _page_richness(page: Dict[str, Any]) -> int:
+    score = 0
+    if page.get("body_excerpt"):
+        score += 2
+    if page.get("version_events"):
+        score += len(page["version_events"])
+    if page.get("recent_contributors"):
+        score += len(page["recent_contributors"])
+    if page.get("labels"):
+        score += len(page["labels"])
+    return score
+
+
 def merge_pages(
     all_pages: List[Tuple[str, Dict[str, Any]]],
     max_pages: int,
@@ -33,6 +46,8 @@ def merge_pages(
             existing_ver = existing.get("version_number", 0) or 0
             new_ver = page.get("version_number", 0) or 0
             if new_ver > existing_ver:
+                seen[page_id] = page
+            elif new_ver == existing_ver and _page_richness(page) > _page_richness(existing):
                 seen[page_id] = page
     pages = list(seen.values())[:max_pages]
     return pages, total_before, len(pages)
