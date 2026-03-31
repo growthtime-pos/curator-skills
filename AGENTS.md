@@ -19,6 +19,9 @@
 - `confluence-curation/SKILL.md` defines the skill contract, workflow, and output expectations.
 - `confluence-curation/agents/openai.yaml` contains the agent-facing metadata and default prompt.
 - `confluence-curation/scripts/fetch_confluence.py` is the networked data collection CLI.
+- `confluence-curation/scripts/configure_confluence.py` is the local credential and connection config manager.
+- `confluence-curation/scripts/expand_keywords.py` extracts expansion keyword candidates from initial fetch results.
+- `confluence-curation/scripts/merge_fetched.py` merges and deduplicates multiple fetch result files.
 - `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator.
 - `confluence-curation/references/` contains prompt, scoring, architecture, and review references, not executable code.
 - `confluence-curation/scripts/__pycache__/` is generated output and should not be edited by hand.
@@ -33,9 +36,9 @@
 ## Build Commands
 
 - There is no formal build pipeline today.
-- Fast syntax build-equivalent for both scripts:
+- Fast syntax build-equivalent for all scripts:
   ```bash
-  python -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py
+  python -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/expand_keywords.py confluence-curation/scripts/merge_fetched.py
   ```
 - Whole-tree bytecode compilation:
   ```bash
@@ -48,6 +51,14 @@
 - CLI contract check for the curator:
   ```bash
   python confluence-curation/scripts/curate_confluence.py --help
+  ```
+- CLI contract check for keyword expansion:
+  ```bash
+  python confluence-curation/scripts/expand_keywords.py --help
+  ```
+- CLI contract check for merge:
+  ```bash
+  python confluence-curation/scripts/merge_fetched.py --help
   ```
 
 ## Lint Commands
@@ -79,6 +90,12 @@
   ```
   ```bash
   python -m py_compile confluence-curation/scripts/curate_confluence.py
+  ```
+  ```bash
+  python -m py_compile confluence-curation/scripts/expand_keywords.py
+  ```
+  ```bash
+  python -m py_compile confluence-curation/scripts/merge_fetched.py
   ```
 - End-to-end manual test pattern:
   1. Run `fetch_confluence.py` with a small scope and `--output tmp/fetch.json`.

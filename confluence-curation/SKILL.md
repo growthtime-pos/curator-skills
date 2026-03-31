@@ -97,6 +97,42 @@ When the user asks for deeper insight analysis, also produce:
 - likely owner or maintainer signals
 - suggested next actions for cleanup, migration, or verification
 
+## Keyword Expansion Workflow
+
+When the user's initial query may not cover all relevant pages, use iterative keyword expansion to broaden search coverage.
+
+1. Run an initial fetch with the user's query.
+2. Run `scripts/expand_keywords.py` on the initial results to discover related keywords from labels, titles, ancestor pages, and body text.
+3. Present the discovered keyword candidates to the user for approval.
+4. Run a second fetch with the approved expanded keywords.
+5. Run `scripts/merge_fetched.py` to combine and deduplicate both rounds of results.
+6. Continue with the normal staged pipeline using the merged output.
+
+Bounds:
+- Limit to at most 2 search rounds (original + 1 expansion).
+- The suggested query contains at most 5 expanded terms.
+- Merge output is capped at 500 pages by default.
+
+Example keyword expansion flow:
+```bash
+# Round 1: initial search
+python3 confluence-curation/scripts/fetch_confluence.py --query "deploy" --include-body --output /tmp/fetch-r1.json
+
+# Discover expanded keywords
+python3 confluence-curation/scripts/expand_keywords.py --input /tmp/fetch-r1.json --original-query "deploy" --output /tmp/keyword-expansion.json
+
+# (Agent presents candidates to user for approval)
+
+# Round 2: expanded search
+python3 confluence-curation/scripts/fetch_confluence.py --query "rollback|release|canary" --include-body --output /tmp/fetch-r2.json
+
+# Merge both rounds
+python3 confluence-curation/scripts/merge_fetched.py --inputs /tmp/fetch-r1.json /tmp/fetch-r2.json --output /tmp/fetch-merged.json
+
+# Continue pipeline with merged output
+python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/fetch-merged.json --output /tmp/normalized.json
+```
+
 ## Example Invocations
 
 - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --output /tmp/confluence.json`
@@ -127,7 +163,8 @@ Use the staged pipeline when you want topic-level insight instead of only page r
    - `python3 confluence-curation/scripts/smoke_pipeline.py`
 
 Recommended artifact layout:
-- `/tmp/confluence.json`
+- `/tmp/confluence.json` (or `/tmp/fetch-r1.json`, `/tmp/fetch-r2.json`, `/tmp/fetch-merged.json` when using keyword expansion)
+- `/tmp/keyword-expansion.json` (when using keyword expansion)
 - `/tmp/normalized.json`
 - `/tmp/clusters.json`
 - `/tmp/evidence/`
