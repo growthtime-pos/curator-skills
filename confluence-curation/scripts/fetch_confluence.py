@@ -20,24 +20,46 @@ from urllib import error, parse, request
 MAX_RPS = 1.0
 VERSION_LIMIT = 5
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.confluence-curation.json")
 
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
+def load_saved_config(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _config_str(config: Dict[str, Any], key: str, env_key: Optional[str] = None) -> Optional[str]:
+    if env_key:
+        env_val = os.getenv(env_key)
+        if env_val:
+            return env_val
+    return config.get(key)
+
+
 def parse_args() -> argparse.Namespace:
+    config_path = os.getenv("CONFLUENCE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
+    config = load_saved_config(config_path)
+
     parser = argparse.ArgumentParser(description="Fetch Confluence pages and profile hints.")
-    parser.add_argument("--base-url", default=os.getenv("CONFLUENCE_BASE_URL"))
+    parser.add_argument("--base-url", default=_config_str(config, "base_url", "CONFLUENCE_BASE_URL"))
     parser.add_argument(
         "--deployment-type",
-        default=os.getenv("CONFLUENCE_DEPLOYMENT_TYPE", "auto"),
+        default=os.getenv("CONFLUENCE_DEPLOYMENT_TYPE") or config.get("deployment_type", "auto"),
         choices=["auto", "cloud", "server", "datacenter"],
     )
-    parser.add_argument("--email", default=os.getenv("CONFLUENCE_EMAIL"))
-    parser.add_argument("--username", default=os.getenv("CONFLUENCE_USERNAME"))
-    parser.add_argument("--api-token", default=os.getenv("CONFLUENCE_API_TOKEN"))
-    parser.add_argument("--password", default=os.getenv("CONFLUENCE_PASSWORD"))
+    parser.add_argument("--email", default=_config_str(config, "email", "CONFLUENCE_EMAIL"))
+    parser.add_argument("--username", default=_config_str(config, "username", "CONFLUENCE_USERNAME"))
+    parser.add_argument("--api-token", default=_config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
+    parser.add_argument("--password", default=_config_str(config, "password", "CONFLUENCE_PASSWORD"))
     parser.add_argument("--space-key")
     parser.add_argument("--root-page-id")
     parser.add_argument("--all-spaces", action="store_true", help="Search across all accessible spaces.")
@@ -46,16 +68,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--days", type=int)
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--include-body", action="store_true")
-    parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification for testing.")
+    insecure_default = config.get("insecure", False)
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        default=insecure_default,
+        help="Disable SSL certificate verification for testing.",
+    )
     parser.add_argument(
         "--cache-dir",
-        default=os.getenv("CONFLUENCE_CACHE_DIR", os.path.expanduser("~/.confluence-curation-cache")),
+        default=os.getenv("CONFLUENCE_CACHE_DIR") or config.get("cache_dir", os.path.expanduser("~/.confluence-curation-cache")),
         help="Directory used to persist fetched results for reuse.",
     )
     parser.add_argument(
         "--cache-ttl-hours",
         type=int,
-        default=int(os.getenv("CONFLUENCE_CACHE_TTL_HOURS", "24")),
+        default=int(os.getenv("CONFLUENCE_CACHE_TTL_HOURS") or config.get("cache_ttl_hours", 24)),
         help="Reuse cache younger than this many hours unless --refresh-cache is used.",
     )
     parser.add_argument("--refresh-cache", action="store_true", help="Ignore existing cache and fetch fresh data.")
@@ -63,13 +91,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rate-limit-rps",
         type=float,
-        default=float(os.getenv("CONFLUENCE_RATE_LIMIT_RPS", "1.0")),
+        default=float(os.getenv("CONFLUENCE_RATE_LIMIT_RPS") or config.get("rate_limit_rps", 1.0)),
     )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    args._config_path = config_path
+    args._config_used = bool(config)
 
     if not args.base_url:
-        parser.error("--base-url or CONFLUENCE_BASE_URL is required")
+        parser.error("--base-url or CONFLUENCE_BASE_URL is required (또는 configure_confluence.py 로 설정)")
     if not args.space_key and not args.root_page_id and not args.all_spaces:
         parser.error("--space-key, --root-page-id, or --all-spaces is required")
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > MAX_RPS:
