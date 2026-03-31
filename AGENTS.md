@@ -2,8 +2,8 @@
 
 ## Scope
 
-- This repository currently contains one skill package: `confluence-curation/`.
-- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, and the planning references under `confluence-curation/references/`.
+- This repository currently contains the main `confluence-curation/` skill package and the extension skill under `confluence-curation/extensions/preferred-space-expansion/`.
+- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, the preferred-space expansion files under `confluence-curation/extensions/preferred-space-expansion/`, and the planning references under `confluence-curation/references/`.
 - The Python code is stdlib-only; there is no `pyproject.toml`, `requirements.txt`, `package.json`, or Makefile on the current `main` branch.
 - There is no checked-in test suite yet, so validation is mostly smoke testing and syntax checking.
 
@@ -21,6 +21,7 @@
 - `confluence-curation/scripts/fetch_confluence.py` is the networked data collection CLI.
 - `confluence-curation/scripts/configure_confluence.py` is the local credential and connection config manager.
 - `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator.
+- `confluence-curation/extensions/preferred-space-expansion/` contains the preferred-space expansion skill, schema notes, and expansion CLI.
 - `confluence-curation/references/` contains prompt, scoring, architecture, and review references, not executable code.
 - `confluence-curation/scripts/__pycache__/` is generated output and should not be edited by hand.
 
@@ -38,6 +39,10 @@
   ```bash
   python -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py
   ```
+- Syntax build-equivalent including the preferred-space expansion script:
+  ```bash
+  python -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py
+  ```
 - Whole-tree bytecode compilation:
   ```bash
   python -m compileall confluence-curation
@@ -49,6 +54,10 @@
 - CLI contract check for the curator:
   ```bash
   python confluence-curation/scripts/curate_confluence.py --help
+  ```
+- CLI contract check for the preferred-space expansion skill:
+  ```bash
+  python confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --help
   ```
 
 ## Lint Commands
@@ -69,6 +78,10 @@
 - Smoke test curator argument validation:
   ```bash
   python confluence-curation/scripts/curate_confluence.py --help
+  ```
+- Smoke test preferred-space expansion argument validation:
+  ```bash
+  python confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --help
   ```
 - Fixture-based staged pipeline smoke test:
   ```bash

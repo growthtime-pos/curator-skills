@@ -1,0 +1,4 @@
+version: 1
+display_name: Preferred Space Expansion
+short_description: 기존 Confluence 검색 결과를 기준으로 선호 스페이스 내부의 연관 문서를 확장 탐색하고 병합용 JSON 아티팩트를 만듭니다.
+default_prompt: 기존 Confluence 키워드 검색 결과를 바탕으로 선호 스페이스 안에서 제목, 키워드, 계층 관계가 연결되는 관련 문서를 더 찾고, 포함 이유와 우대 근거가 담긴 JSON 아티팩트를 만들어줘.

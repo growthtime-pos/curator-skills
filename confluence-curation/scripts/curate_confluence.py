@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Curate fetched Confluence metadata into Korean Markdown.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--expansion-input")
     parser.add_argument("--insights-input")
     parser.add_argument("--review-input")
     parser.add_argument("--top-n", type=int, default=20)
@@ -47,6 +48,80 @@ def read_json(path: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not expansion_payload:
+        return payload
+
+    pages = list(payload.get("pages", []))
+    people = list(payload.get("people", []))
+    relationships = list(payload.get("relationships", []))
+    warnings = list(payload.get("warnings", []))
+    preferred_spaces = expansion_payload.get("preferred_spaces", [])
+
+    page_ids = {page.get("page_id") for page in pages}
+    person_ids = {person.get("account_id") for person in people if person}
+    relationship_keys = {
+        (rel.get("from_page_id"), rel.get("to_page_id"), rel.get("type"))
+        for rel in relationships
+    }
+
+    for page in pages:
+        page.setdefault("discovery_source", "query_seed")
+        page.setdefault("discovery_reasons", ["키워드 검색 시드"])
+        page.setdefault("preferred_space_match", page.get("space_key") in preferred_spaces if preferred_spaces else False)
+        page.setdefault("preferred_space_boost", 8 if page.get("preferred_space_match") else 0)
+
+    for page in expansion_payload.get("expanded_pages", []):
+        page_id = page.get("page_id")
+        if not page_id or page_id in page_ids:
+            continue
+        expanded_page = dict(page)
+        expanded_page.setdefault("discovery_source", "preferred_space_expansion")
+        expanded_page.setdefault("discovery_reasons", [])
+        expanded_page.setdefault("preferred_space_match", True)
+        expanded_page.setdefault("preferred_space_boost", 8 if expanded_page.get("preferred_space_match") else 0)
+        pages.append(expanded_page)
+        page_ids.add(page_id)
+
+    for person in expansion_payload.get("people", []):
+        account_id = person.get("account_id") if person else None
+        if not account_id or account_id in person_ids:
+            continue
+        people.append(person)
+        person_ids.add(account_id)
+
+    for rel in expansion_payload.get("links", []):
+        key = (rel.get("from_page_id"), rel.get("to_page_id"), rel.get("type"))
+        if key in relationship_keys:
+            continue
+        relationships.append(rel)
+        relationship_keys.add(key)
+
+    for warning in expansion_payload.get("warnings", []):
+        if warning not in warnings:
+            warnings.append(warning)
+
+    meta = dict(payload.get("meta", {}))
+    scope = dict(meta.get("scope", {}))
+    scope["preferred_spaces"] = preferred_spaces
+    scope["expanded_page_ids"] = [page.get("page_id") for page in expansion_payload.get("expanded_pages", []) if page.get("page_id")]
+    scope["query_seed_page_ids"] = expansion_payload.get("seed_page_ids", [])
+    meta["scope"] = scope
+    meta["preferred_space_expansion"] = {
+        "used": True,
+        "artifact_schema_version": ((expansion_payload.get("meta") or {}).get("schema_version")),
+        "expanded_page_count": len(expansion_payload.get("expanded_pages", [])),
+    }
+
+    merged = dict(payload)
+    merged["meta"] = meta
+    merged["pages"] = pages
+    merged["people"] = people
+    merged["relationships"] = relationships
+    merged["warnings"] = warnings
+    return merged
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -308,7 +383,11 @@ def synthesize_trusted_data(scored_pages: List[Dict[str, Any]], page_lookup: Dic
 
 def synthesize_overview(scored_pages: List[Dict[str, Any]], page_lookup: Dict[str, Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
-    ranked = sorted(scored_pages, key=lambda item: item["trust_score"] + item["freshness_score"], reverse=True)
+    ranked = sorted(
+        scored_pages,
+        key=lambda item: item.get("ranking_score", item["trust_score"] + item["freshness_score"]),
+        reverse=True,
+    )
     seen = set()
     for item in ranked:
         page = page_lookup.get(item["page_id"], {})
@@ -337,6 +416,10 @@ def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings:
         lines.append(f"- 대상 space는 `{scope['space_key']}` 입니다.")
     if scope.get("all_spaces"):
         lines.append("- 접근 가능한 전체 space 범위를 대상으로 분석했습니다.")
+    if scope.get("preferred_spaces"):
+        lines.append(f"- 선호 space 확장 기준은 `{', '.join(scope['preferred_spaces'])}` 입니다.")
+    if scope.get("expanded_page_ids"):
+        lines.append(f"- 선호 space 확장으로 {len(scope['expanded_page_ids'])}개 문서를 추가 검토했습니다.")
     if scope.get("root_page_id"):
         lines.append(f"- 기준 루트 페이지 ID는 `{scope['root_page_id']}` 입니다.")
     if warnings:
@@ -446,6 +529,8 @@ def build_markdown(
         lines.append("- 최신성과 신뢰도가 서로 다른 문서에 모여 있어 함께 참고하는 편이 안전합니다.")
     if warnings:
         lines.append("- 프로필 정보 또는 API 제한 때문에 일부 문서는 확신이 낮습니다.")
+    if meta.get("preferred_space_expansion", {}).get("used"):
+        lines.append("- 선호 space 내부의 연관 문서를 추가 탐색해 검토 범위와 우선순위를 보강했습니다.")
     lines.append("")
 
     topic_lines = build_topic_insight_lines(insights_payload, review_payload)
@@ -476,15 +561,16 @@ def build_markdown(
     lines.append("")
 
     lines.append("## 문서 현황")
-    lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 판단 근거 |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for item in scored_pages:
         team_title = item.get("people_summary") or "정보 부족"
         updated_at = item.get("updated_at") or "-"
         evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
         authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
+        discovery = "; ".join(item.get("discovery_reasons", [])[:2]) or "키워드 검색"
         lines.append(
-            f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {evidence} |"
+            f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
         )
     lines.append("")
 
@@ -528,6 +614,8 @@ def main() -> int:
     args = parse_args()
     with open(args.input, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
+    expansion_payload = read_json(args.expansion_input)
+    payload = merge_expansion_payload(payload, expansion_payload)
     insights_payload = read_json(args.insights_input)
     review_payload = read_json(args.review_input)
 
@@ -573,6 +661,12 @@ def main() -> int:
             risk_notes.append("더 최근에 갱신된 유사 문서가 있어 대체되었을 가능성이 있습니다.")
         if not risk_notes:
             risk_notes.append("현재 기준으로는 큰 충돌 신호가 많지 않습니다.")
+        preferred_space_boost = int(page.get("preferred_space_boost", 0) or 0)
+        ranking_score = trust_score + freshness_score + preferred_space_boost
+        if page.get("preferred_space_match"):
+            evidence.append(f"선호 space 우대 +{preferred_space_boost}")
+        if page.get("discovery_source") == "preferred_space_expansion":
+            evidence.append("선호 space 연관 탐색으로 포함")
         scored_pages.append(
             {
                 "page_id": page["page_id"],
@@ -582,14 +676,19 @@ def main() -> int:
                 "people_summary": ", ".join(recent_people_summary) if recent_people_summary else "정보 부족",
                 "freshness_score": freshness_score,
                 "trust_score": trust_score,
+                "ranking_score": ranking_score,
                 "confidence_level": confidence,
                 "status_flag": status_flag,
                 "evidence": evidence[:5],
                 "risk_notes": risk_notes,
+                "discovery_source": page.get("discovery_source", "query_seed"),
+                "discovery_reasons": page.get("discovery_reasons", []),
+                "preferred_space_match": bool(page.get("preferred_space_match")),
+                "preferred_space_boost": preferred_space_boost,
             }
         )
 
-    scored_pages.sort(key=lambda item: (item["trust_score"] + item["freshness_score"]), reverse=True)
+    scored_pages.sort(key=lambda item: (item["ranking_score"], item["trust_score"], item["freshness_score"]), reverse=True)
     scored_pages = scored_pages[: args.top_n]
 
     cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
@@ -648,6 +747,7 @@ def main() -> int:
             "summary": {
                 "best_current_candidate_page_id": max(scored_pages, key=lambda item: item["freshness_score"], default={}).get("page_id"),
                 "best_trust_candidate_page_id": max(scored_pages, key=lambda item: item["trust_score"], default={}).get("page_id"),
+                "best_ranked_candidate_page_id": max(scored_pages, key=lambda item: item["ranking_score"], default={}).get("page_id"),
                 "needs_review_count": len([item for item in scored_pages if item["status_flag"] == "needs-review"]),
             },
             "scored_pages": scored_pages,
