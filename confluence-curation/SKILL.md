@@ -9,6 +9,8 @@ description: Fetch Confluence pages and edit history, then curate which document
 
 Use this skill to turn a messy set of Confluence pages into a readable curation and insight view.
 
+When the user wants preferred spaces to be weighted more heavily, delegate the expansion step to the sibling skill at `extensions/preferred-space-expansion/` and then merge its JSON artifact into the final curation flow.
+
 The goal is not to declare one document as absolute truth.
 The goal is to show:
 - which pages look most current
@@ -54,13 +56,14 @@ python3 confluence-curation/scripts/configure_confluence.py clear
    - seed page or page set
    - optional date window
 2. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
-3. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
-4. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
-5. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
-6. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
-7. Run `scripts/curate_confluence.py` on the fetched JSON.
-8. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
-9. Call out ambiguity explicitly instead of hiding it.
+3. If the user has preferred spaces, run `extensions/preferred-space-expansion/scripts/expand_preferred_space.py` to fetch related pages from those spaces and produce a merge artifact.
+4. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
+5. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
+6. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
+7. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
+8. Run `scripts/curate_confluence.py` on the fetched JSON, plus the optional expansion artifact when present.
+9. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
+10. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -165,8 +168,9 @@ python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/fetch-m
 
 - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --output /tmp/confluence.json`
 - `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --output /tmp/confluence-ai.json`
+- `python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --input /tmp/confluence-ai.json --preferred-space ENG --preferred-space AI --output /tmp/confluence-ai-expanded.json`
 - `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --cache-only --output /tmp/confluence-ai.json`
-- `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --output /tmp/confluence.md`
+- `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --expansion-input /tmp/confluence-ai-expanded.json --output /tmp/confluence.md`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
