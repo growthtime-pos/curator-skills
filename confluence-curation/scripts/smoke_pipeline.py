@@ -61,6 +61,35 @@ def assert_report_contents(report_path: Path) -> None:
             raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다: {fragment}")
 
 
+def assert_keyword_expansion_shape(workdir: Path) -> None:
+    expansion = read_json(workdir / "keyword-expansion.json")
+    if "candidates" not in expansion:
+        raise RuntimeError("키워드 확장 결과에 candidates 필드가 없습니다.")
+    if "suggested_terms" not in expansion:
+        raise RuntimeError("키워드 확장 결과에 suggested_terms 필드가 없습니다.")
+    if "suggested_cql" not in expansion:
+        raise RuntimeError("키워드 확장 결과에 suggested_cql 필드가 없습니다.")
+    if not expansion["candidates"]:
+        raise RuntimeError("키워드 확장 후보가 비어 있습니다.")
+    first = expansion["candidates"][0]
+    for field in ("keyword", "score", "sources", "frequency"):
+        if field not in first:
+            raise RuntimeError(f"키워드 후보에 {field} 필드가 없습니다.")
+
+
+def assert_merge_shape(workdir: Path) -> None:
+    merged = read_json(workdir / "merged.json")
+    meta = merged.get("meta", {})
+    if "rounds" not in meta:
+        raise RuntimeError("병합 결과에 rounds 메타데이터가 없습니다.")
+    if meta.get("total_pages_after_dedup", 0) < 1:
+        raise RuntimeError("병합 후 페이지가 없습니다.")
+    pages = merged.get("pages", [])
+    page_ids = [p.get("page_id") for p in pages]
+    if len(page_ids) != len(set(page_ids)):
+        raise RuntimeError("병합 결과에 중복 페이지가 존재합니다.")
+
+
 def assert_artifact_shapes(workdir: Path) -> None:
     clusters = read_json(workdir / "clusters.json")
     insights = read_json(workdir / "insights.json")
@@ -94,8 +123,40 @@ def main() -> int:
     evidence_dir = workdir / "evidence"
 
     python = sys.executable
+
+    # -- keyword expansion step --
     run_step(
-        [python, "confluence-curation/scripts/normalize_confluence.py", "--input", str(fixture), "--output", str(workdir / "normalized.json")],
+        [
+            python,
+            "confluence-curation/scripts/expand_keywords.py",
+            "--input",
+            str(fixture),
+            "--original-query",
+            "deploy",
+            "--output",
+            str(workdir / "keyword-expansion.json"),
+            "--min-frequency",
+            "1",
+        ],
+        root,
+    )
+
+    # -- merge step (self-merge to test dedup) --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/merge_fetched.py",
+            "--inputs",
+            str(fixture),
+            str(fixture),
+            "--output",
+            str(workdir / "merged.json"),
+        ],
+        root,
+    )
+
+    run_step(
+        [python, "confluence-curation/scripts/normalize_confluence.py", "--input", str(workdir / "merged.json"), "--output", str(workdir / "normalized.json")],
         root,
     )
     run_step(
@@ -130,7 +191,7 @@ def main() -> int:
             python,
             "confluence-curation/scripts/curate_confluence.py",
             "--input",
-            str(fixture),
+            str(workdir / "merged.json"),
             "--insights-input",
             str(workdir / "insights.json"),
             "--review-input",
@@ -144,6 +205,8 @@ def main() -> int:
     )
 
     for name in [
+        "keyword-expansion.json",
+        "merged.json",
         "normalized.json",
         "clusters.json",
         "evidence-manifest.json",
@@ -154,6 +217,8 @@ def main() -> int:
     ]:
         assert_file_exists(workdir / name)
 
+    assert_keyword_expansion_shape(workdir)
+    assert_merge_shape(workdir)
     assert_artifact_shapes(workdir)
     assert_report_contents(workdir / "report.md")
 
