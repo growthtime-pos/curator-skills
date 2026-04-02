@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--workdir",
-        default="tmp/smoke-pipeline",
+        default="data/smoke-pipeline",
         help="스모크 테스트 산출물을 저장할 디렉터리입니다.",
     )
     parser.add_argument(
@@ -95,6 +95,15 @@ def assert_artifact_shapes(workdir: Path) -> None:
         raise RuntimeError("리뷰 결과에 한글 verdict 필드가 없습니다.")
 
 
+def assert_feature_artifacts(workdir: Path) -> None:
+    required = [
+        workdir / "features" / "cluster-confluence" / "latest.json",
+        workdir / "features" / "curation-scoring" / "latest.json",
+    ]
+    for path in required:
+        assert_file_exists(path)
+
+
 def main() -> int:
     args = parse_args()
     root = repo_root()
@@ -127,7 +136,7 @@ def main() -> int:
         root,
     )
     run_step(
-        [python, "confluence-curation/scripts/cluster_confluence.py", "--input", str(workdir / "normalized.json"), "--output", str(workdir / "clusters.json")],
+        [python, "confluence-curation/scripts/cluster_confluence.py", "--input", str(workdir / "normalized.json"), "--output", str(workdir / "clusters.json"), "--data-dir", str(workdir)],
         root,
     )
     run_step(
@@ -167,6 +176,8 @@ def main() -> int:
             str(workdir / "report.md"),
             "--emit-json-summary",
             str(workdir / "summary.json"),
+            "--data-dir",
+            str(workdir),
         ],
         root,
     )
@@ -185,6 +196,7 @@ def main() -> int:
 
     assert_merge_shape(workdir)
     assert_artifact_shapes(workdir)
+    assert_feature_artifacts(workdir)
     assert_report_contents(workdir / "report.md")
 
     if not args.keep_artifacts:

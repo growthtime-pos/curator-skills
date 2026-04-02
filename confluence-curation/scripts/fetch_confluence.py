@@ -12,11 +12,13 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib import error, parse, request
 
 from confluence_config import config_str, detect_deployment_type, resolve_saved_config
+from data_store import default_data_dir, persist_feature_state, read_json_if_exists, write_json
 
 
 MAX_RPS = 1.0
@@ -66,6 +68,11 @@ def parse_args() -> argparse.Namespace:
         "--cache-dir",
         default=os.getenv("CONFLUENCE_CACHE_DIR") or config.get("cache_dir", os.path.expanduser("~/.confluence-curation-cache")),
         help="Directory used to persist fetched results for reuse.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir(),
+        help="Directory used to persist reusable page snapshots and pipeline artifacts.",
     )
     parser.add_argument(
         "--cache-ttl-hours",
@@ -310,14 +317,210 @@ def strip_html(value: Optional[str]) -> Optional[str]:
     return text[:4000] if text else None
 
 
+def body_hash(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
 def title_key(title: str) -> str:
     return re.sub(r"[^a-z0-9가-힣]+", "", title.lower())
 
 
 def similarity(a: str, b: str) -> float:
-    from difflib import SequenceMatcher
-
     return SequenceMatcher(None, title_key(a), title_key(b)).ratio()
+
+
+def page_snapshot_dir(data_dir: str, page_id: str) -> str:
+    return os.path.join(data_dir, "pages", str(page_id))
+
+
+def latest_snapshot_path(data_dir: str, page_id: str) -> str:
+    return os.path.join(page_snapshot_dir(data_dir, page_id), "latest.json")
+
+
+def history_snapshot_path(data_dir: str, page_id: str, fetched_at: str, version_number: Optional[int]) -> str:
+    stamp = fetched_at.replace(":", "").replace("-", "").replace("+", "_")
+    version_label = f"v{version_number}" if version_number is not None else "vunknown"
+    return os.path.join(page_snapshot_dir(data_dir, page_id), "history", f"{stamp}_{version_label}.json")
+
+
+def run_artifact_path(data_dir: str, fetched_at: str) -> str:
+    stamp = fetched_at.replace(":", "").replace("-", "").replace("+", "_")
+    return os.path.join(data_dir, "runs", f"fetch_{stamp}.json")
+
+
+def page_change_summary(current: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not previous:
+        return {
+            "has_reference": False,
+            "changed": True,
+            "change_type": "new",
+            "importance": "high",
+            "importance_score": 16,
+            "previous_updated_at": None,
+            "current_updated_at": current.get("updated_at"),
+            "previous_version_number": None,
+            "current_version_number": current.get("version_number"),
+            "changed_fields": ["new_page"],
+            "body_similarity": None,
+            "summary_ko": "저장된 기준본이 없어 새 문서로 취급합니다.",
+        }
+
+    previous_body = previous.get("body_excerpt") or ""
+    current_body = current.get("body_excerpt") or ""
+    similarity_score = SequenceMatcher(None, previous_body, current_body).ratio() if previous_body or current_body else 1.0
+    changed_fields: List[str] = []
+
+    if previous.get("title") != current.get("title"):
+        changed_fields.append("title")
+    if previous.get("updated_at") != current.get("updated_at"):
+        changed_fields.append("updated_at")
+    if previous.get("version_number") != current.get("version_number"):
+        changed_fields.append("version_number")
+    if previous.get("body_hash") != current.get("body_hash"):
+        changed_fields.append("body_excerpt")
+    if previous.get("last_updated_by_account_id") != current.get("last_updated_by_account_id"):
+        changed_fields.append("last_updated_by_account_id")
+
+    if not changed_fields:
+        return {
+            "has_reference": True,
+            "changed": False,
+            "change_type": "unchanged",
+            "importance": "background",
+            "importance_score": 3,
+            "previous_updated_at": previous.get("updated_at"),
+            "current_updated_at": current.get("updated_at"),
+            "previous_version_number": previous.get("version_number"),
+            "current_version_number": current.get("version_number"),
+            "changed_fields": [],
+            "body_similarity": round(similarity_score, 3),
+            "summary_ko": "저장된 기준본 대비 의미 있는 변경이 확인되지 않았습니다.",
+        }
+
+    version_gap = (current.get("version_number") or 0) - (previous.get("version_number") or 0)
+    major_change = "body_excerpt" in changed_fields and similarity_score < 0.88
+    if major_change or version_gap >= 2:
+        importance = "high"
+        importance_score = 18
+    elif "updated_at" in changed_fields or "version_number" in changed_fields:
+        importance = "medium"
+        importance_score = 11
+    else:
+        importance = "low"
+        importance_score = 6
+
+    changes_ko: List[str] = []
+    if "title" in changed_fields:
+        changes_ko.append("제목 변경")
+    if "updated_at" in changed_fields:
+        changes_ko.append("갱신 시각 변경")
+    if "version_number" in changed_fields:
+        changes_ko.append("버전 증가")
+    if "body_excerpt" in changed_fields:
+        changes_ko.append("본문 내용 변경")
+    if "last_updated_by_account_id" in changed_fields:
+        changes_ko.append("최근 수정자 변경")
+
+    return {
+        "has_reference": True,
+        "changed": True,
+        "change_type": "updated",
+        "importance": importance,
+        "importance_score": importance_score,
+        "previous_updated_at": previous.get("updated_at"),
+        "current_updated_at": current.get("updated_at"),
+        "previous_version_number": previous.get("version_number"),
+        "current_version_number": current.get("version_number"),
+        "changed_fields": changed_fields,
+        "body_similarity": round(similarity_score, 3),
+        "summary_ko": "저장된 기준본 대비 " + ", ".join(changes_ko) + " 이 확인되었습니다.",
+    }
+
+
+def persist_data_artifacts(
+    data_dir: str,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    fetched_at = ((result.get("meta") or {}).get("fetched_at")) or iso_now()
+    pages = result.get("pages", [])
+    snapshot_stats = {
+        "page_count": len(pages),
+        "new_page_count": 0,
+        "updated_page_count": 0,
+        "unchanged_page_count": 0,
+    }
+
+    for page in pages:
+        page_id = str(page.get("page_id") or "")
+        if not page_id:
+            continue
+        previous_payload = load_json_if_exists(latest_snapshot_path(data_dir, page_id))
+        previous = (previous_payload or {}).get("page")
+        page["body_hash"] = body_hash(page.get("body_excerpt"))
+        change = page_change_summary(page, previous)
+        page["reference_snapshot"] = {
+            "data_dir": os.path.abspath(data_dir),
+            "latest_snapshot_path": os.path.abspath(latest_snapshot_path(data_dir, page_id)),
+            "has_reference": change["has_reference"],
+        }
+        page["change_summary"] = change
+
+        if change["change_type"] == "new":
+            snapshot_stats["new_page_count"] += 1
+        elif change["changed"]:
+            snapshot_stats["updated_page_count"] += 1
+        else:
+            snapshot_stats["unchanged_page_count"] += 1
+
+        snapshot_payload = {
+            "meta": {
+                "saved_at": iso_now(),
+                "fetched_at": fetched_at,
+                "page_id": page_id,
+                "data_dir": os.path.abspath(data_dir),
+            },
+            "page": page,
+        }
+        write_json(latest_snapshot_path(data_dir, page_id), snapshot_payload)
+        write_json(
+            history_snapshot_path(data_dir, page_id, fetched_at, page.get("version_number")),
+            snapshot_payload,
+        )
+
+    run_payload = dict(result)
+    run_path = run_artifact_path(data_dir, fetched_at)
+    write_json(run_path, run_payload)
+    feature_paths = persist_feature_state(
+        data_dir,
+        "fetch-confluence",
+        {
+            "meta": {
+                "generated_at": fetched_at,
+                "page_count": len(pages),
+                "new_page_count": snapshot_stats["new_page_count"],
+                "updated_page_count": snapshot_stats["updated_page_count"],
+                "unchanged_page_count": snapshot_stats["unchanged_page_count"],
+            },
+            "scope": ((result.get("meta") or {}).get("scope", {})),
+            "cache": ((result.get("meta") or {}).get("cache", {})),
+            "data_artifacts": {
+                "run_artifact_path": os.path.abspath(run_path),
+                **snapshot_stats,
+            },
+        },
+        generated_at=fetched_at,
+    )
+    result.setdefault("meta", {})
+    result["meta"]["data_artifacts"] = {
+        "used": True,
+        "data_dir": os.path.abspath(data_dir),
+        "run_artifact_path": os.path.abspath(run_path),
+        "feature_latest_path": feature_paths["latest_path"],
+        **snapshot_stats,
+    }
+    return result
 
 
 def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List[Dict[str, Any]]:
@@ -647,6 +850,7 @@ def main() -> int:
                 "cache_path": cache_path,
                 "cache_ttl_hours": args.cache_ttl_hours,
             }
+            cached = persist_data_artifacts(args.data_dir, cached)
             os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
             with open(args.output, "w", encoding="utf-8") as handle:
                 json.dump(cached, handle, ensure_ascii=False, indent=2)
@@ -709,6 +913,7 @@ def main() -> int:
     }
 
     save_cached_result(cache_path, result)
+    result = persist_data_artifacts(args.data_dir, result)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as handle:
         json.dump(result, handle, ensure_ascii=False, indent=2)

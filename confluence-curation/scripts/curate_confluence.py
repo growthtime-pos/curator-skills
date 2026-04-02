@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
+from data_store import default_data_dir, persist_feature_state
+
 
 STATUS_KO = {
     "fresh-and-trusted": "최신·신뢰 높음",
@@ -40,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--freshness-weight", type=float, default=40.0)
     parser.add_argument("--relationship-weight", type=float, default=25.0)
     parser.add_argument("--emit-json-summary")
+    parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
     return parser.parse_args()
 
 
@@ -176,6 +179,19 @@ def score_freshness(page: Dict[str, Any], strong_days: int, medium_days: int) ->
         evidence.append(f"최근 기여자 {contributor_count}명")
 
     return min(100, round(score)), evidence
+
+
+def score_change_signal(page: Dict[str, Any]) -> Tuple[int, List[str]]:
+    change = page.get("change_summary") or {}
+    if not change:
+        return 0, []
+    score = min(int(change.get("importance_score", 0) or 0), 18)
+    evidence: List[str] = []
+    if change.get("summary_ko"):
+        evidence.append(change["summary_ko"])
+    if change.get("has_reference") and not change.get("changed"):
+        evidence.append("저장된 기준본을 배경 참고로 함께 사용했습니다.")
+    return score, evidence[:2]
 
 
 def score_people(page: Dict[str, Any], people_by_id: Dict[str, Dict[str, Any]]) -> Tuple[float, List[str], bool]:
@@ -517,6 +533,10 @@ def build_markdown(
     lines: List[str] = ["# Confluence 문서 큐레이션", ""]
     lines.append("## 요약")
     lines.extend(summarize_scope(meta, pages, warnings))
+    if meta.get("data_artifacts", {}).get("used"):
+        lines.append(
+            f"- 저장된 data 기준본을 함께 사용했고, 신규 {meta['data_artifacts'].get('new_page_count', 0)}개 / 갱신 {meta['data_artifacts'].get('updated_page_count', 0)}개 / 유지 {meta['data_artifacts'].get('unchanged_page_count', 0)}개를 반영했습니다."
+        )
     if best_current:
         lines.append(
             f"- 현재 작업 기준으로는 **{best_current['title']}** 가 가장 최신 후보로 보입니다."
@@ -628,9 +648,11 @@ def main() -> int:
 
     scored_pages: List[Dict[str, Any]] = []
     for page in pages:
-        freshness_score, freshness_evidence = score_freshness(
+        freshness_base, freshness_evidence = score_freshness(
             page, args.recent_days_strong, args.recent_days_medium
         )
+        change_score, change_evidence = score_change_signal(page)
+        freshness_score = min(100, freshness_base + change_score)
         people_score, people_evidence, missing_people = score_people(page, people_by_id)
         relationship_score, relationship_evidence, duplicate, superseded = score_relationships(
             page, relationships, page_lookup
@@ -649,7 +671,7 @@ def main() -> int:
             summary = " / ".join([bit for bit in bits if bit])
             if summary:
                 recent_people_summary.append(summary)
-        evidence = freshness_evidence + relationship_evidence + content_evidence
+        evidence = freshness_evidence + change_evidence + relationship_evidence + content_evidence
         if people_evidence:
             evidence.append("주요 기여자: " + "; ".join(people_evidence[:2]))
         risk_notes = []
@@ -675,6 +697,7 @@ def main() -> int:
                 "recent_contributors": page.get("recent_contributors", []),
                 "people_summary": ", ".join(recent_people_summary) if recent_people_summary else "정보 부족",
                 "freshness_score": freshness_score,
+                "change_score": change_score,
                 "trust_score": trust_score,
                 "ranking_score": ranking_score,
                 "confidence_level": confidence,
@@ -685,13 +708,40 @@ def main() -> int:
                 "discovery_reasons": page.get("discovery_reasons", []),
                 "preferred_space_match": bool(page.get("preferred_space_match")),
                 "preferred_space_boost": preferred_space_boost,
+                "topic_update_boost": 0,
             }
         )
+
+    cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
+    scored_page_lookup = {item["page_id"]: item for item in scored_pages}
+    for cluster in cluster_groups:
+        changed_candidates = []
+        for page in cluster:
+            item = scored_page_lookup.get(page.get("page_id"))
+            if not item:
+                continue
+            if item.get("change_score", 0) <= 0:
+                continue
+            updated_days = days_ago(page.get("updated_at"))
+            changed_candidates.append(
+                (
+                    item["change_score"],
+                    -(999999 if updated_days is None else updated_days),
+                    item["page_id"],
+                )
+            )
+        changed_candidates.sort(reverse=True)
+        for index, _candidate in enumerate(changed_candidates):
+            page_id = _candidate[2]
+            item = scored_page_lookup[page_id]
+            boost = 8 if index == 0 else 4
+            item["topic_update_boost"] += boost
+            item["ranking_score"] += boost
+            item["evidence"].append(f"동일 주제 최신 변경 가중치 +{boost}")
 
     scored_pages.sort(key=lambda item: (item["ranking_score"], item["trust_score"], item["freshness_score"]), reverse=True)
     scored_pages = scored_pages[: args.top_n]
 
-    cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
     clusters = []
     for idx, cluster in enumerate(cluster_groups, start=1):
         ordered = sorted(cluster, key=lambda item: days_ago(item.get("updated_at")) or 999999)
@@ -709,6 +759,16 @@ def main() -> int:
 
     timeline = []
     for page in sorted(pages, key=lambda item: parse_datetime(item.get("updated_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
+        change = page.get("change_summary") or {}
+        if change.get("changed"):
+            timeline.append(
+                {
+                    "at": page.get("updated_at"),
+                    "page_id": page["page_id"],
+                    "event_type": "stored_reference_diff",
+                    "summary_ko": change.get("summary_ko"),
+                }
+            )
         summary = f"{(page.get('updated_at') or '날짜 미상')[:10]}: {page['title']} 문서가 갱신되었습니다."
         timeline.append({"at": page.get("updated_at"), "page_id": page["page_id"], "event_type": "updated", "summary_ko": summary})
         for event in page.get("version_events", [])[:3]:
@@ -767,6 +827,62 @@ def main() -> int:
             "review_summary": (review_payload or {}).get("summary"),
             "timeline": timeline[:50],
             "warnings": warnings,
+        }
+        with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
+            json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+
+    feature_paths = persist_feature_state(
+        args.data_dir,
+        "curation-scoring",
+        {
+            "meta": {
+                "generated_at": meta.get("fetched_at") or datetime.now(timezone.utc).astimezone().isoformat(),
+                "input_path": os.path.abspath(args.input),
+                "output_path": os.path.abspath(args.output),
+                "summary_path": os.path.abspath(args.emit_json_summary) if args.emit_json_summary else None,
+            },
+            "weights": {
+                "people_signal_weight": args.people_signal_weight,
+                "freshness_weight": args.freshness_weight,
+                "relationship_weight": args.relationship_weight,
+                "recent_days_strong": args.recent_days_strong,
+                "recent_days_medium": args.recent_days_medium,
+                "title_similarity_threshold": args.title_similarity_threshold,
+                "preferred_space_boost_default": 8,
+                "topic_update_boost_primary": 8,
+                "topic_update_boost_secondary": 4,
+            },
+            "applied_features": {
+                "preferred_space_expansion_used": bool(meta.get("preferred_space_expansion", {}).get("used")),
+                "data_artifacts_used": bool(meta.get("data_artifacts", {}).get("used")),
+                "top_preferred_space_pages": [
+                    {
+                        "page_id": item.get("page_id"),
+                        "preferred_space_boost": item.get("preferred_space_boost", 0),
+                    }
+                    for item in scored_pages
+                    if item.get("preferred_space_boost", 0) > 0
+                ][:10],
+                "top_topic_update_pages": [
+                    {
+                        "page_id": item.get("page_id"),
+                        "topic_update_boost": item.get("topic_update_boost", 0),
+                    }
+                    for item in scored_pages
+                    if item.get("topic_update_boost", 0) > 0
+                ][:10],
+            },
+        },
+    )
+
+    if args.emit_json_summary:
+        with open(args.emit_json_summary, "r", encoding="utf-8") as handle:
+            summary_payload = json.load(handle)
+        summary_payload.setdefault("meta", {})
+        summary_payload["meta"]["data_artifacts"] = {
+            "feature_latest_path": feature_paths["latest_path"],
+            "feature_history_path": feature_paths["history_path"],
         }
         with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
             json.dump(summary_payload, handle, ensure_ascii=False, indent=2)

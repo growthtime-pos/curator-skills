@@ -52,6 +52,20 @@ def load_fetch_module() -> Any:
 FETCH = load_fetch_module()
 
 
+def load_data_store_module() -> Any:
+    script_path = Path(__file__).resolve().parents[3] / "scripts" / "data_store.py"
+    spec = importlib.util.spec_from_file_location("confluence_data_store_shared", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"data_store.py 를 불러올 수 없습니다: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+DATA_STORE = load_data_store_module()
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
@@ -96,6 +110,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cache-dir",
         default=os.getenv("CONFLUENCE_CACHE_DIR") or config.get("cache_dir", os.path.expanduser("~/.confluence-curation-cache")),
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=os.getenv("CONFLUENCE_DATA_DIR") or DATA_STORE.default_data_dir(),
     )
     parser.add_argument(
         "--cache-ttl-hours",
@@ -366,6 +384,32 @@ def main() -> int:
         "people": people,
         "links": merged_links,
         "warnings": warnings,
+    }
+
+    feature_paths = DATA_STORE.persist_feature_state(
+        args.data_dir,
+        "preferred-space-expansion",
+        {
+            "meta": {
+                "generated_at": artifact["meta"]["generated_at"],
+                "source_fetch_path": os.path.abspath(args.input),
+            },
+            "weights": {
+                "preferred_space_boost": 8,
+                "relatedness_threshold": args.relatedness_threshold,
+                "hierarchy_threshold": args.hierarchy_threshold,
+                "expansion_limit": args.expansion_limit,
+            },
+            "preferred_spaces": preferred_spaces,
+            "seed_page_ids": artifact["seed_page_ids"],
+            "expanded_page_count": len(matched_pages),
+            "output_path": os.path.abspath(args.output),
+        },
+        generated_at=artifact["meta"]["generated_at"],
+    )
+    artifact["meta"]["data_artifacts"] = {
+        "feature_latest_path": feature_paths["latest_path"],
+        "feature_history_path": feature_paths["history_path"],
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
