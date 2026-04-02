@@ -16,50 +16,37 @@ from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib import error, parse, request
 
+from confluence_config import config_str, detect_deployment_type, resolve_saved_config
+
 
 MAX_RPS = 1.0
 VERSION_LIMIT = 5
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
-DEFAULT_CONFIG_PATH = os.path.expanduser("~/.confluence-curation.json")
 
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
-def load_saved_config(path: str) -> Dict[str, Any]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _config_str(config: Dict[str, Any], key: str, env_key: Optional[str] = None) -> Optional[str]:
-    if env_key:
-        env_val = os.getenv(env_key)
-        if env_val:
-            return env_val
-    return config.get(key)
-
-
 def parse_args() -> argparse.Namespace:
-    config_path = os.getenv("CONFLUENCE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-    config = load_saved_config(config_path)
+    config_override = os.getenv("CONFLUENCE_CONFIG_PATH")
+    resolved_config = resolve_saved_config(
+        explicit_path=config_override,
+        explicit_source="env_path",
+    )
+    config = resolved_config.config
 
     parser = argparse.ArgumentParser(description="Fetch Confluence pages and profile hints.")
-    parser.add_argument("--base-url", default=_config_str(config, "base_url", "CONFLUENCE_BASE_URL"))
+    parser.add_argument("--base-url", default=config_str(config, "base_url", "CONFLUENCE_BASE_URL"))
     parser.add_argument(
         "--deployment-type",
         default=os.getenv("CONFLUENCE_DEPLOYMENT_TYPE") or config.get("deployment_type", "auto"),
         choices=["auto", "cloud", "server", "datacenter"],
     )
-    parser.add_argument("--email", default=_config_str(config, "email", "CONFLUENCE_EMAIL"))
-    parser.add_argument("--username", default=_config_str(config, "username", "CONFLUENCE_USERNAME"))
-    parser.add_argument("--api-token", default=_config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
-    parser.add_argument("--password", default=_config_str(config, "password", "CONFLUENCE_PASSWORD"))
+    parser.add_argument("--email", default=config_str(config, "email", "CONFLUENCE_EMAIL"))
+    parser.add_argument("--username", default=config_str(config, "username", "CONFLUENCE_USERNAME"))
+    parser.add_argument("--api-token", default=config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
+    parser.add_argument("--password", default=config_str(config, "password", "CONFLUENCE_PASSWORD"))
     parser.add_argument("--space-key")
     parser.add_argument("--root-page-id")
     parser.add_argument("--all-spaces", action="store_true", help="Search across all accessible spaces.")
@@ -95,11 +82,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    args._config_path = config_path
-    args._config_used = bool(config)
+    args._config_path = resolved_config.path
+    args._config_source = resolved_config.source
+    args._config_used = resolved_config.found
+    args._config_load_error = resolved_config.load_error
 
     if not args.base_url:
-        parser.error("--base-url or CONFLUENCE_BASE_URL is required (또는 configure_confluence.py 로 설정)")
+        config_hint = args._config_path or "canonical/legacy 설정 파일 없음"
+        if args._config_load_error:
+            parser.error(
+                "--base-url or CONFLUENCE_BASE_URL is required. "
+                f"설정 파일을 읽지 못했습니다 ({config_hint}): {args._config_load_error}"
+            )
+        parser.error(
+            "--base-url or CONFLUENCE_BASE_URL is required "
+            f"(또는 configure_confluence.py 로 설정, 확인한 설정 소스={args._config_source}, 경로={config_hint})"
+        )
     if not args.space_key and not args.root_page_id and not args.all_spaces:
         parser.error("--space-key, --root-page-id, or --all-spaces is required")
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > MAX_RPS:
@@ -134,16 +132,6 @@ class AuthConfig:
 def _basic_auth_header(username: str, secret: str) -> str:
     token = base64.b64encode(f"{username}:{secret}".encode("utf-8")).decode("ascii")
     return f"Basic {token}"
-
-
-def detect_deployment_type(base_url: str, requested: str) -> str:
-    if requested != "auto":
-        return requested
-    parsed = parse.urlparse(base_url)
-    host = (parsed.netloc or "").lower()
-    if "atlassian.net" in host:
-        return "cloud"
-    return "server"
 
 
 class ConfluenceClient:
@@ -648,6 +636,11 @@ def main() -> int:
         cached = load_cached_result(cache_path, args.cache_ttl_hours)
         if cached:
             cached.setdefault("meta", {})
+            cached["meta"]["config"] = {
+                "source": args._config_source,
+                "path": args._config_path,
+                "found": args._config_used,
+            }
             cached["meta"]["cache"] = {
                 "used": True,
                 "cache_key": cache_key,
@@ -687,6 +680,11 @@ def main() -> int:
             "base_url": args.base_url.rstrip("/"),
             "deployment_type": deployment_type,
             "auth_used": auth.auth_used,
+            "config": {
+                "source": args._config_source,
+                "path": args._config_path,
+                "found": args._config_used,
+            },
             "rate_limit_rps": args.rate_limit_rps,
             "scope": {
                 "space_key": args.space_key,
