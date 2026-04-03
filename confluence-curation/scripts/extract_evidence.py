@@ -57,6 +57,7 @@ def page_freshness_score(page: Dict[str, Any]) -> int:
         score += 10
     score += min(len(page.get("version_events", [])), 5) * 5
     score += min(len(page.get("recent_contributors", [])), 4) * 4
+    score += min(int(((page.get("change_summary") or {}).get("importance_score", 0) or 0)), 18)
     return min(score, 100)
 
 
@@ -159,6 +160,17 @@ def summarize_maintainers(cluster_pages: List[Dict[str, Any]], limit: int) -> Li
 def summarize_changes(cluster_pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     changes: List[Dict[str, Any]] = []
     for page in cluster_pages:
+        change_summary = page.get("change_summary") or {}
+        if change_summary.get("changed"):
+            changes.append(
+                {
+                    "page_id": page.get("page_id"),
+                    "title": page.get("title"),
+                    "updated_at": page.get("updated_at"),
+                    "kind": "stored_reference_diff",
+                    "summary": change_summary.get("summary_ko"),
+                }
+            )
         if page.get("updated_at"):
             changes.append(
                 {
@@ -234,6 +246,7 @@ def page_summary(page: Optional[Dict[str, Any]], max_snippets: int) -> Optional[
         "updated_days_ago": page.get("updated_days_ago"),
         "freshness_score": page_freshness_score(page),
         "trust_score": page_trust_score(page),
+        "change_summary": page.get("change_summary", {}),
         "recent_contributors": page.get("recent_contributors", []),
         "labels": page.get("labels", []),
         "keywords": page.get("keywords", [])[:8],

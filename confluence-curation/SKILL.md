@@ -127,9 +127,12 @@ Prefer saving intermediate artifacts instead of hiding all reasoning inside one 
 - Use `--all-spaces` when the user wants cross-space search instead of a single space.
 - Use `--include-body` when the user wants the skill to organize the content itself, not only metadata.
 - Use `--cache-dir` to persist fetched results locally and reuse them later.
+- Use `--data-dir` to persist reusable page snapshots, history, and run artifacts inside the workspace.
 - Use `--cache-only` to work from saved data without making new API calls.
 - Use `--refresh-cache` when the saved data should be ignored and fetched again.
-- Keep fetched artifacts, normalized artifacts, and final reports separate so later passes can reuse them.
+- Keep fetched artifacts, normalized artifacts, page snapshots, and final reports separate so later passes can reuse them.
+- Treat saved snapshots as background reference, then confirm whether the Confluence page has changed before trusting the saved content.
+- If a page changed relative to the saved snapshot, surface what changed and give that change more weight within the same topic cluster.
 
 ## Output Requirements
 
@@ -194,30 +197,30 @@ After the initial fetch, the agent must always perform keyword expansion to broa
 
 ```bash
 # Round 1: initial search
-python3 confluence-curation/scripts/fetch_confluence.py --query "deploy" --include-body --output /tmp/fetch-r1.json
+python3 confluence-curation/scripts/fetch_confluence.py --query "deploy" --include-body --data-dir data --output data/fetch-r1.json
 
-# (Agent reads /tmp/fetch-r1.json, analyzes content, and proposes keywords like "rollback", "release")
+# (Agent reads data/fetch-r1.json, analyzes content, and proposes keywords like "rollback", "release")
 # (User approves keywords)
 
 # Round 2: one fetch per approved keyword
-python3 confluence-curation/scripts/fetch_confluence.py --query "rollback" --include-body --output /tmp/fetch-r2a.json
-python3 confluence-curation/scripts/fetch_confluence.py --query "release" --include-body --output /tmp/fetch-r2b.json
+python3 confluence-curation/scripts/fetch_confluence.py --query "rollback" --include-body --data-dir data --output data/fetch-r2a.json
+python3 confluence-curation/scripts/fetch_confluence.py --query "release" --include-body --data-dir data --output data/fetch-r2b.json
 
 # Merge all rounds
-python3 confluence-curation/scripts/merge_fetched.py --inputs /tmp/fetch-r1.json /tmp/fetch-r2a.json /tmp/fetch-r2b.json --output /tmp/fetch-merged.json
+python3 confluence-curation/scripts/merge_fetched.py --inputs data/fetch-r1.json data/fetch-r2a.json data/fetch-r2b.json --output data/fetch-merged.json
 
 # Continue pipeline with merged output
-python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/fetch-merged.json --output /tmp/normalized.json
+python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-merged.json --output data/normalized.json
 ```
 
 ## Example Invocations
 
 - `python3 confluence-curation/scripts/configure_confluence.py status --json`
-- `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --output /tmp/confluence.json`
-- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --output /tmp/confluence-ai.json`
-- `python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --input /tmp/confluence-ai.json --preferred-space ENG --preferred-space AI --output /tmp/confluence-ai-expanded.json`
-- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --cache-only --output /tmp/confluence-ai.json`
-- `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/confluence.json --expansion-input /tmp/confluence-ai-expanded.json --output /tmp/confluence.md`
+- `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --data-dir data --output data/confluence.json`
+- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --data-dir data --output data/confluence-ai.json`
+- `python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --input data/confluence-ai.json --preferred-space ENG --preferred-space AI --output data/confluence-ai-expanded.json`
+- `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --data-dir data --cache-only --output data/confluence-ai.json`
+- `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --expansion-input data/confluence-ai-expanded.json --output data/confluence.md`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
@@ -226,37 +229,42 @@ Use the staged pipeline when you want topic-level insight instead of only page r
 
 1. Fetch raw data:
    - `python3 confluence-curation/scripts/configure_confluence.py status --json`
-   - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --include-body --output /tmp/fetch-r1.json`
+   - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --include-body --data-dir data --output data/fetch-r1.json`
 2. Keyword expansion (mandatory):
-   - Agent reads `/tmp/fetch-r1.json`, analyzes content, and proposes expansion keywords
+   - Agent reads `data/fetch-r1.json`, analyzes content, and proposes expansion keywords
    - User approves keywords
    - Run additional fetches per approved keyword
-   - `python3 confluence-curation/scripts/merge_fetched.py --inputs /tmp/fetch-r1.json /tmp/fetch-r2a.json ... --output /tmp/fetch-merged.json`
-3. Normalize the merged corpus:
-   - `python3 confluence-curation/scripts/normalize_confluence.py --input /tmp/fetch-merged.json --output /tmp/normalized.json`
+   - `python3 confluence-curation/scripts/merge_fetched.py --inputs data/fetch-r1.json data/fetch-r2a.json ... --output data/fetch-merged.json`
+3. Normalize the fetched corpus:
+   - `python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-merged.json --output data/normalized.json`
 4. Cluster related pages into topics:
-   - `python3 confluence-curation/scripts/cluster_confluence.py --input /tmp/normalized.json --output /tmp/clusters.json`
+   - `python3 confluence-curation/scripts/cluster_confluence.py --input data/normalized.json --output data/clusters.json`
 5. Build evidence packs:
-   - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input /tmp/normalized.json --clusters-input /tmp/clusters.json --output-dir /tmp/evidence --emit-manifest /tmp/evidence-manifest.json`
+   - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input data/normalized.json --clusters-input data/clusters.json --output-dir data/evidence --emit-manifest data/evidence-manifest.json`
 6. Synthesize topic insights:
-   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest /tmp/evidence-manifest.json --output /tmp/insights.json`
+   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json`
 7. Run the second-pass review:
-   - `python3 confluence-curation/scripts/review_insights.py --input /tmp/insights.json --output /tmp/review.json`
+   - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json`
 8. Render the final Markdown report:
-   - `python3 confluence-curation/scripts/curate_confluence.py --input /tmp/fetch-merged.json --insights-input /tmp/insights.json --review-input /tmp/review.json --output /tmp/confluence-report.md --emit-json-summary /tmp/confluence-summary.json`
+   - `python3 confluence-curation/scripts/curate_confluence.py --input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --output data/confluence-report.md --emit-json-summary data/confluence-summary.json`
 9. Run the fixture-based smoke test when changing the staged pipeline:
    - `python3 confluence-curation/scripts/smoke_pipeline.py`
 
 Recommended artifact layout:
-- `/tmp/fetch-r1.json`, `/tmp/fetch-r2a.json`, `/tmp/fetch-r2b.json` (fetch rounds)
-- `/tmp/fetch-merged.json` (merged result)
-- `/tmp/normalized.json`
-- `/tmp/clusters.json`
-- `/tmp/evidence/`
-- `/tmp/evidence-manifest.json`
-- `/tmp/insights.json`
-- `/tmp/review.json`
-- `/tmp/confluence-report.md`
+- `data/confluence.json` (or `data/fetch-r1.json`, `data/fetch-r2.json`, `data/fetch-merged.json` when using keyword expansion)
+- `data/normalized.json`
+- `data/clusters.json`
+- `data/evidence/`
+- `data/evidence-manifest.json`
+- `data/insights.json`
+- `data/review.json`
+- `data/confluence-report.md`
+- `data/pages/<page_id>/latest.json`
+- `data/pages/<page_id>/history/*.json`
+- `data/runs/fetch_<timestamp>.json`
+- `data/features/preferred-space-expansion/latest.json`
+- `data/features/cluster-confluence/latest.json`
+- `data/features/curation-scoring/latest.json`
 
 ## Exit Criteria
 

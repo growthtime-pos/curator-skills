@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Set
 
+from data_store import default_data_dir, persist_feature_state
+
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
@@ -22,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--title-threshold", type=float, default=0.82)
     parser.add_argument("--keyword-overlap", type=int, default=2)
     parser.add_argument("--shared-contributors", type=int, default=1)
+    parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
     return parser.parse_args()
 
 
@@ -315,6 +318,28 @@ def main() -> int:
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as handle:
+        json.dump(result, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+    feature_paths = persist_feature_state(
+        args.data_dir,
+        "cluster-confluence",
+        {
+            "meta": {
+                "generated_at": result["meta"]["generated_at"],
+                "source_input": os.path.abspath(args.input),
+            },
+            "weights": result["meta"]["thresholds"],
+            "summary": result["summary"],
+            "output_path": os.path.abspath(args.output),
+        },
+        generated_at=result["meta"]["generated_at"],
+    )
+    result["meta"]["data_artifacts"] = {
+        "feature_latest_path": feature_paths["latest_path"],
+        "feature_history_path": feature_paths["history_path"],
+    }
     with open(args.output, "w", encoding="utf-8") as handle:
         json.dump(result, handle, ensure_ascii=False, indent=2)
         handle.write("\n")

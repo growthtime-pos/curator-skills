@@ -1,4 +1,4 @@
 version: 1
 display_name: Confluence Curation
-short_description: Confluence 문서를 수집해 최신성, 신뢰도, 주제별 인사이트, 변경 흐름을 한글로 정리합니다.
-default_prompt: Confluence 작업을 시작할 때는 먼저 저장된 연결 설정 상태를 확인하고, 설정이 완전하면 다시 묻지 말고 그대로 사용해. 그다음 문서들을 비교해서 어떤 문서가 최신이고 더 신뢰할 만한지, 어떤 주제에서 충돌이나 공백이 있는지, 어떤 순서로 변경되었는지 한글로 정리하고, 사용자가 선호하는 space 가 있으면 preferred-space-expansion 아티팩트도 함께 반영해줘.
+short_description: Confluence 문서를 수집해 연결 설정과 data 스냅샷을 활용하고, 최신성, 신뢰도, 주제별 인사이트, 변경 흐름을 한글로 정리합니다.
+default_prompt: Confluence 작업을 시작할 때는 먼저 저장된 연결 설정 상태를 확인하고, 설정이 완전하면 다시 묻지 말고 그대로 사용해. 그다음 문서들을 비교해서 어떤 문서가 최신이고 더 신뢰할 만한지, 어떤 주제에서 충돌이나 공백이 있는지, 어떤 순서로 변경되었는지 한글로 정리하고, 저장된 data 스냅샷이 있으면 배경 reference 로 사용하되 현재 업데이트 여부와 변경 내용을 함께 반영해줘. 사용자가 선호하는 space 가 있으면 preferred-space-expansion 아티팩트도 함께 반영해줘.
