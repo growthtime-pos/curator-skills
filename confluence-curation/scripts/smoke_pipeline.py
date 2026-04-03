@@ -61,22 +61,6 @@ def assert_report_contents(report_path: Path) -> None:
             raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다: {fragment}")
 
 
-def assert_keyword_expansion_shape(workdir: Path) -> None:
-    expansion = read_json(workdir / "keyword-expansion.json")
-    if "candidates" not in expansion:
-        raise RuntimeError("키워드 확장 결과에 candidates 필드가 없습니다.")
-    if "suggested_terms" not in expansion:
-        raise RuntimeError("키워드 확장 결과에 suggested_terms 필드가 없습니다.")
-    if "suggested_cql" not in expansion:
-        raise RuntimeError("키워드 확장 결과에 suggested_cql 필드가 없습니다.")
-    if not expansion["candidates"]:
-        raise RuntimeError("키워드 확장 후보가 비어 있습니다.")
-    first = expansion["candidates"][0]
-    for field in ("keyword", "score", "sources", "frequency"):
-        if field not in first:
-            raise RuntimeError(f"키워드 후보에 {field} 필드가 없습니다.")
-
-
 def assert_merge_shape(workdir: Path) -> None:
     merged = read_json(workdir / "merged.json")
     meta = merged.get("meta", {})
@@ -123,23 +107,6 @@ def main() -> int:
     evidence_dir = workdir / "evidence"
 
     python = sys.executable
-
-    # -- keyword expansion step --
-    run_step(
-        [
-            python,
-            "confluence-curation/scripts/expand_keywords.py",
-            "--input",
-            str(fixture),
-            "--original-query",
-            "deploy",
-            "--output",
-            str(workdir / "keyword-expansion.json"),
-            "--min-frequency",
-            "1",
-        ],
-        root,
-    )
 
     # -- merge step (self-merge to test dedup) --
     run_step(
@@ -205,7 +172,6 @@ def main() -> int:
     )
 
     for name in [
-        "keyword-expansion.json",
         "merged.json",
         "normalized.json",
         "clusters.json",
@@ -217,7 +183,6 @@ def main() -> int:
     ]:
         assert_file_exists(workdir / name)
 
-    assert_keyword_expansion_shape(workdir)
     assert_merge_shape(workdir)
     assert_artifact_shapes(workdir)
     assert_report_contents(workdir / "report.md")
