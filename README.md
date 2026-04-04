@@ -215,3 +215,7 @@ python3 confluence-curation/scripts/curate_confluence.py --help
 ## 라이선스
 
 Private repository.
+
+## Operational Notes
+
+- Local validation note for the installed `kr-stock-analysis` skill: [notes/kr-stock-analysis-validation.md](notes/kr-stock-analysis-validation.md)
