@@ -1,4 +1,8 @@
-# Confluence Curation Output Template
+# Confluence Curation Output Template (general)
+
+> 이 템플릿은 `general` 목적의 기본 출력 구조입니다.
+> 목적별 템플릿은 [purpose-registry.md](purpose-registry.md)를 참조하세요.
+> 공통 어투·상태 라벨 규칙은 [purposes/_base.md](purposes/_base.md)에 있습니다.
 
 ## 목적
 

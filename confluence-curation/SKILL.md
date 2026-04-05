@@ -72,16 +72,17 @@ python3 confluence-curation/scripts/configure_confluence.py clear
    - target space or all accessible spaces
    - seed page or page set
    - optional date window
-6. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
-7. If the user has preferred spaces, run `extensions/preferred-space-expansion/scripts/expand_preferred_space.py` to fetch related pages from those spaces and produce an optional expansion artifact.
-8. **Keyword expansion (mandatory):** Analyze the fetch results and derive expansion keywords following the procedure in the "Keyword Expansion" section below. Present candidates to the user for approval, then run a second fetch with approved keywords and merge results using `scripts/merge_fetched.py`.
-9. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
-10. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
-11. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
-12. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
-13. Run `scripts/curate_confluence.py` on the merged JSON, plus the optional preferred-space expansion artifact when present.
-14. Use [references/output-template.md](references/output-template.md) to keep the output Korean and easy to scan.
-15. Call out ambiguity explicitly instead of hiding it.
+6. Determine the curation purpose. Infer from the user's query using trigger phrases in [references/purpose-registry.md](references/purpose-registry.md). If confident, state the inferred purpose and proceed. If ambiguous, ask the user. Default to `general` if no clear match. Available purposes: `general`, `change-tracking`, `onboarding`.
+7. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
+8. If the user has preferred spaces, run `extensions/preferred-space-expansion/scripts/expand_preferred_space.py` to fetch related pages from those spaces and produce an optional expansion artifact.
+9. **Keyword expansion (mandatory):** Analyze the fetch results and derive expansion keywords following the procedure in the "Keyword Expansion" section below. Present candidates to the user for approval, then run a second fetch with approved keywords and merge results using `scripts/merge_fetched.py`.
+10. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
+11. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
+12. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
+13. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
+14. Run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact when present. Pass the purpose determined in step 6.
+15. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
+16. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -89,16 +90,17 @@ When the user wants more than page ranking, use a staged workflow inspired by ar
 
 1. Fetch raw Confluence data.
 2. **Keyword expansion (mandatory):** Follow the procedure in the "Keyword Expansion" section below, then merge results.
-3. Normalize the merged data.
-4. Cluster related pages into topic groups.
-5. Build evidence packs for each topic:
+3. Determine the curation purpose (same as Default Workflow step 6).
+4. Normalize the merged data.
+5. Cluster related pages into topic groups.
+6. Build evidence packs for each topic:
    - current candidate page
    - trusted background page
    - conflicting claims or duplicate pages
    - recent changes and likely maintainers
-6. Synthesize topic-level insights with explicit evidence.
-7. Run a second-pass review over freshness, trust, contradiction, and actionability.
-8. Produce a final Korean report with confidence and open questions.
+7. Synthesize topic-level insights with explicit evidence: `scripts/synthesize_insights.py --purpose {purpose}`
+8. Run a second-pass review over freshness, trust, contradiction, and actionability: `scripts/review_insights.py --purpose {purpose}`
+9. Produce a final Korean report with confidence and open questions: `scripts/curate_confluence.py --purpose {purpose}`
 
 Prefer saving intermediate artifacts instead of hiding all reasoning inside one final summary.
 
@@ -136,15 +138,16 @@ Prefer saving intermediate artifacts instead of hiding all reasoning inside one 
 
 ## Output Requirements
 
-Always produce:
-- a short Korean summary of the current best candidates
-- a Korean synthesis of the underlying content when body text is available
-- a section showing the most trustworthy data cleaned up into readable bullets
-- a topic-level insight section with conflicts, gaps, or action items when enough evidence exists
-- a table of candidate pages
-- a timeline or ordered change flow
-- explicit warning flags
-- a final recommendation with uncertainty noted
+Output structure varies by purpose. See [references/purpose-registry.md](references/purpose-registry.md) for purpose-specific section definitions.
+
+### `general` (기본값)
+Always produce: Korean summary, synthesized content, trusted data bullets, topic-level insight section, candidate page table, change flow timeline, warning flags, recommendation with uncertainty.
+
+### `change-tracking`
+Always produce: trend summary, trend signals (new docs, update frequency, contributor growth), expanded timeline (30 entries), contributor analysis, document table with change frequency column, follow-up items.
+
+### `onboarding`
+Always produce: topic summary for newcomers, recommended reading order, key content bullets, background context, document map by cluster, exploration suggestions (related spaces/labels).
 
 When the user asks for deeper insight analysis, also produce:
 - topic clusters or comparable document groups
@@ -221,6 +224,8 @@ python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-m
 - `python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --input data/confluence-ai.json --preferred-space ENG --preferred-space AI --output data/confluence-ai-expanded.json`
 - `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --data-dir data --cache-only --output data/confluence-ai.json`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --expansion-input data/confluence-ai-expanded.json --output data/confluence.md`
+- `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose change-tracking`
+- `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose onboarding`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
@@ -241,12 +246,12 @@ Use the staged pipeline when you want topic-level insight instead of only page r
    - `python3 confluence-curation/scripts/cluster_confluence.py --input data/normalized.json --output data/clusters.json`
 5. Build evidence packs:
    - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input data/normalized.json --clusters-input data/clusters.json --output-dir data/evidence --emit-manifest data/evidence-manifest.json`
-6. Synthesize topic insights:
-   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json`
+6. Synthesize topic insights (replace `{purpose}` with `general`, `change-tracking`, or `onboarding`):
+   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json --purpose {purpose}`
 7. Run the second-pass review:
-   - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json`
+   - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json --purpose {purpose}`
 8. Render the final Markdown report:
-   - `python3 confluence-curation/scripts/curate_confluence.py --input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --output data/confluence-report.md --emit-json-summary data/confluence-summary.json`
+   - `python3 confluence-curation/scripts/curate_confluence.py --input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --output data/confluence-report.md --emit-json-summary data/confluence-summary.json --purpose {purpose}`
 9. Run the fixture-based smoke test when changing the staged pipeline:
    - `python3 confluence-curation/scripts/smoke_pipeline.py`
 
