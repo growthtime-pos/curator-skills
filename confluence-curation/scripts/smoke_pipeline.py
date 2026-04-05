@@ -48,17 +48,31 @@ def assert_file_exists(path: Path) -> None:
         raise RuntimeError(f"필수 산출물이 생성되지 않았습니다: {path}")
 
 
-def assert_report_contents(report_path: Path) -> None:
+def assert_report_contents(report_path: Path, purpose: str = "general") -> None:
     text = report_path.read_text(encoding="utf-8")
-    required_fragments = [
-        "## 주제별 인사이트",
-        "결론:",
-        "확신도:",
-        "권장 후속 조치:",
-    ]
+    if purpose == "change-tracking":
+        required_fragments = [
+            "## 트렌드 신호",
+            "## 변경 타임라인",
+            "## 변경 주체 분석",
+            "결론:",
+        ]
+    elif purpose == "onboarding":
+        required_fragments = [
+            "## 추천 읽기 순서",
+            "## 핵심 내용 정리",
+            "## 문서 맵",
+            "결론:",
+        ]
+    else:
+        required_fragments = [
+            "## 주제별 인사이트",
+            "결론:",
+            "확신도:",
+        ]
     for fragment in required_fragments:
         if fragment not in text:
-            raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다: {fragment}")
+            raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다 (purpose={purpose}): {fragment}")
 
 
 def assert_merge_shape(workdir: Path) -> None:
@@ -185,12 +199,43 @@ def main() -> int:
 
     assert_merge_shape(workdir)
     assert_artifact_shapes(workdir)
-    assert_report_contents(workdir / "report.md")
+    assert_report_contents(workdir / "report.md", "general")
+
+    # -- purpose-specific report tests --
+    for purpose in ["change-tracking", "onboarding"]:
+        purpose_report = workdir / f"report-{purpose}.md"
+        purpose_insights = workdir / f"insights-{purpose}.json"
+        purpose_review = workdir / f"review-{purpose}.json"
+        run_step(
+            [python, "confluence-curation/scripts/synthesize_insights.py",
+             "--manifest", str(workdir / "evidence-manifest.json"),
+             "--output", str(purpose_insights),
+             "--purpose", purpose],
+            root,
+        )
+        run_step(
+            [python, "confluence-curation/scripts/review_insights.py",
+             "--input", str(purpose_insights),
+             "--output", str(purpose_review),
+             "--purpose", purpose],
+            root,
+        )
+        run_step(
+            [python, "confluence-curation/scripts/curate_confluence.py",
+             "--input", str(workdir / "merged.json"),
+             "--insights-input", str(purpose_insights),
+             "--review-input", str(purpose_review),
+             "--output", str(purpose_report),
+             "--purpose", purpose],
+            root,
+        )
+        assert_file_exists(purpose_report)
+        assert_report_contents(purpose_report, purpose)
 
     if not args.keep_artifacts:
         shutil.rmtree(workdir)
 
-    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다.")
+    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 (general + change-tracking + onboarding).")
     return 0
 
 

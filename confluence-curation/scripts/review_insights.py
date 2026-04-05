@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run second-pass review over synthesized Confluence insights.")
     parser.add_argument("--input", required=True, help="insights.json from synthesize_insights.py")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
     return parser.parse_args()
 
 
@@ -192,13 +193,21 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
     return "low"
 
 
-def review_topic(insight: Dict[str, Any]) -> Dict[str, Any]:
+def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str, Any]:
     reviews = [
         freshness_review(insight),
         trust_review(insight),
         contradiction_review(insight),
         executive_review(insight),
     ]
+
+    # Purpose-specific reviewer weighting: duplicate the dominant reviewer
+    # so its severity counts twice in combine_reviews and adjust_confidence.
+    if purpose == "change-tracking":
+        reviews.append(freshness_review(insight))
+    elif purpose == "onboarding":
+        reviews.append(executive_review(insight))
+
     verdict = combine_reviews(reviews)
     adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews)
     requires_follow_up = verdict != "approved"
@@ -233,7 +242,7 @@ def main() -> int:
     payload = read_json(args.input)
     insights = payload.get("insights", [])
 
-    reviewed = [review_topic(insight) for insight in insights]
+    reviewed = [review_topic(insight, args.purpose) for insight in insights]
     reviewed.sort(
         key=lambda item: (
             item.get("verdict") == "approved",
@@ -246,6 +255,7 @@ def main() -> int:
         "meta": {
             "generated_at": iso_now(),
             "source_type": "review_insights",
+            "purpose": args.purpose,
             "input": args.input,
             "topic_count": len(reviewed),
         },

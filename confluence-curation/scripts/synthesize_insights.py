@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-actions", type=int, default=3)
     parser.add_argument("--max-snippets", type=int, default=3)
+    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
     return parser.parse_args()
 
 
@@ -61,11 +62,38 @@ def choose_evidence_snippets(pack: Dict[str, Any], max_snippets: int) -> List[Di
     return snippets[:max_snippets]
 
 
-def derive_conclusion(pack: Dict[str, Any]) -> str:
+def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
+    recent_changes = pack.get("recent_changes", [])
 
+    if purpose == "change-tracking":
+        change_count = len(recent_changes)
+        if current and change_count > 0:
+            return (
+                f"이 주제에서는 최근 {change_count}건의 변경이 감지되었으며, "
+                f"`{current.get('title')}` 를 중심으로 활발한 업데이트가 이루어지고 있습니다."
+            )
+        if current:
+            return f"`{current.get('title')}` 가 이 주제의 가장 최근 문서이지만, 뚜렷한 변경 활동은 관측되지 않았습니다."
+        return "이 주제에서는 최근 의미 있는 변경 활동이 관측되지 않았습니다."
+
+    if purpose == "onboarding":
+        if current and trusted and current.get("page_id") == trusted.get("page_id"):
+            return f"이 주제를 처음 접한다면 `{current.get('title')}` 부터 읽는 것을 추천합니다. 가장 최신이면서 신뢰도도 높은 문서입니다."
+        if current and trusted:
+            return (
+                f"이 주제의 시작점으로는 `{current.get('title')}` 를 먼저 읽고, "
+                f"배경 맥락은 `{trusted.get('title')}` 에서 보충하는 것을 추천합니다."
+            )
+        if current:
+            return f"이 주제를 처음 접한다면 `{current.get('title')}` 부터 시작하는 것이 좋지만, 추가 배경 자료를 함께 찾아보는 것을 권합니다."
+        if stale:
+            return f"이 주제의 문서는 `{stale.get('title')}` 가 있지만 오래되어, 최신 상황은 담당자에게 직접 확인하는 것이 좋습니다."
+        return "이 주제는 시작점으로 삼을 만한 문서가 아직 충분하지 않습니다."
+
+    # general (기존 로직)
     if current and trusted and current.get("page_id") == trusted.get("page_id"):
         return f"이 주제의 현재 작업 기준 문서로는 `{current.get('title')}` 를 우선 참고하는 것이 적절합니다."
     if current and trusted:
@@ -97,29 +125,54 @@ def derive_gap_summary(pack: Dict[str, Any]) -> List[str]:
     return gaps
 
 
-def derive_actions(pack: Dict[str, Any], max_actions: int) -> List[str]:
+def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "general") -> List[str]:
     actions: List[str] = []
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
     conflict_notes = pack.get("conflict_notes", [])
     maintainers = pack.get("maintainer_signals", [])
+    recent_changes = pack.get("recent_changes", [])
 
-    if current and trusted and current.get("page_id") != trusted.get("page_id"):
-        actions.append(
-            f"`{current.get('title')}` 에 `{trusted.get('title')}` 의 정책/배경 문맥을 링크하거나 통합할지 검토하세요."
-        )
-    if stale:
-        actions.append(f"`{stale.get('title')}` 를 아카이브, 리다이렉트, 또는 업데이트할지 확인하세요.")
-    if conflict_notes:
-        actions.append("겹치는 문서들을 검토하고 현재 기준 문서와 배경 문서를 어떻게 나눌지 명시하세요.")
-    if maintainers:
-        top = maintainers[0]
-        actions.append(
-            f"`{top.get('display_name')}` 에게 이 주제 클러스터의 소유자와 정확성을 확인해 달라고 요청하세요."
-        )
-    if pack.get("missing_signals"):
-        actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
+    if purpose == "change-tracking":
+        if recent_changes:
+            actions.append("이 주제의 변경 활동을 주기적으로 모니터링하세요.")
+        if maintainers:
+            top = maintainers[0]
+            actions.append(f"`{top.get('display_name')}` 에게 최근 변경의 배경과 향후 계획을 확인하세요.")
+        if current:
+            actions.append(f"`{current.get('title')}` 의 업데이트 추이를 팔로업하세요.")
+        if conflict_notes:
+            actions.append("관련 프로젝트 간 문서 내용이 상충하는 부분이 있는지 확인하세요.")
+
+    elif purpose == "onboarding":
+        if current:
+            actions.append(f"`{current.get('title')}` 를 먼저 읽으세요.")
+        if trusted and (not current or trusted.get("page_id") != current.get("page_id")):
+            actions.append(f"배경 맥락을 위해 `{trusted.get('title')}` 를 다음으로 읽으세요.")
+        if maintainers:
+            top = maintainers[0]
+            actions.append(f"추가 질문은 `{top.get('display_name')}` 에게 문의하세요.")
+        if stale:
+            actions.append(f"`{stale.get('title')}` 는 오래되었으나 역사적 맥락 파악에 도움이 됩니다.")
+
+    else:
+        # general (기존 로직)
+        if current and trusted and current.get("page_id") != trusted.get("page_id"):
+            actions.append(
+                f"`{current.get('title')}` 에 `{trusted.get('title')}` 의 정책/배경 문맥을 링크하거나 통합할지 검토하세요."
+            )
+        if stale:
+            actions.append(f"`{stale.get('title')}` 를 아카이브, 리다이렉트, 또는 업데이트할지 확인하세요.")
+        if conflict_notes:
+            actions.append("겹치는 문서들을 검토하고 현재 기준 문서와 배경 문서를 어떻게 나눌지 명시하세요.")
+        if maintainers:
+            top = maintainers[0]
+            actions.append(
+                f"`{top.get('display_name')}` 에게 이 주제 클러스터의 소유자와 정확성을 확인해 달라고 요청하세요."
+            )
+        if pack.get("missing_signals"):
+            actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
 
     deduped: List[str] = []
     for action in actions:
@@ -149,8 +202,8 @@ def calibrate_confidence(pack: Dict[str, Any]) -> str:
     return "low"
 
 
-def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int) -> Dict[str, Any]:
-    conclusion = derive_conclusion(pack)
+def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, purpose: str = "general") -> Dict[str, Any]:
+    conclusion = derive_conclusion(pack, purpose)
     confidence = calibrate_confidence(pack)
     evidence_page_ids = sorted(
         {
@@ -174,10 +227,14 @@ def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int) 
         "current_reference": summarize_candidate(pack.get("current_candidate")),
         "background_reference": summarize_candidate(pack.get("trusted_candidate")),
         "stale_reference": summarize_candidate(pack.get("stale_candidate")),
-        "recent_change_summary": derive_change_summary(pack),
+        "recent_change_summary": derive_change_summary(pack) if purpose != "change-tracking" else [
+            (change.get("summary") or "").strip()
+            for change in pack.get("recent_changes", [])[:10]
+            if (change.get("summary") or "").strip()
+        ],
         "conflict_notes": pack.get("conflict_notes", []),
         "evidence_gaps": derive_gap_summary(pack),
-        "suggested_actions": derive_actions(pack, max_actions),
+        "suggested_actions": derive_actions(pack, max_actions, purpose),
         "evidence_page_ids": evidence_page_ids,
         "evidence_snippets": choose_evidence_snippets(pack, max_snippets),
         "warnings": pack.get("warnings", []),
@@ -211,7 +268,8 @@ def main() -> int:
         if not pack_path:
             continue
         pack = read_json(pack_path)
-        insights.append(synthesize_topic(pack, args.max_actions, args.max_snippets))
+        max_snippets = args.max_snippets if args.purpose != "onboarding" else max(args.max_snippets, 5)
+        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose))
 
     insights.sort(
         key=lambda item: (
@@ -226,6 +284,7 @@ def main() -> int:
         "meta": {
             "generated_at": iso_now(),
             "source_type": "synthesize_insights",
+            "purpose": args.purpose,
             "manifest": args.manifest,
             "topic_count": len(insights),
         },
