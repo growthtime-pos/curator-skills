@@ -95,13 +95,15 @@ python3 confluence-curation/scripts/extract_evidence.py \
   --output-dir /tmp/evidence \
   --emit-manifest /tmp/evidence-manifest.json
 
-# 5. 인사이트 합성
+# 5. 인사이트 합성 (--purpose: general, change-tracking, onboarding)
 python3 confluence-curation/scripts/synthesize_insights.py \
-  --manifest /tmp/evidence-manifest.json --output /tmp/insights.json
+  --manifest /tmp/evidence-manifest.json --output /tmp/insights.json \
+  --purpose general
 
 # 6. 2차 리뷰
 python3 confluence-curation/scripts/review_insights.py \
-  --input /tmp/insights.json --output /tmp/review.json
+  --input /tmp/insights.json --output /tmp/review.json \
+  --purpose general
 
 # 7. 최종 리포트
 python3 confluence-curation/scripts/curate_confluence.py \
@@ -109,7 +111,29 @@ python3 confluence-curation/scripts/curate_confluence.py \
   --insights-input /tmp/insights.json \
   --review-input /tmp/review.json \
   --output /tmp/report.md \
-  --emit-json-summary /tmp/summary.json
+  --emit-json-summary /tmp/summary.json \
+  --purpose general
+```
+
+## 목적별 큐레이션
+
+`--purpose` 플래그로 목적에 맞는 리포트를 생성합니다. 에이전트가 사용자 쿼리에서 자동 추론하거나, 명시적으로 지정할 수 있습니다.
+
+| 목적 | `--purpose` | 핵심 출력 |
+|------|------------|----------|
+| 일반 큐레이션 | `general` (기본값) | 문서 랭킹, 주제별 인사이트, 변경 흐름 |
+| 변경 추적 + 트렌드 | `change-tracking` | 트렌드 신호, 변경 타임라인, 변경 주체 분석 |
+| 온보딩/학습 | `onboarding` | 추천 읽기 순서, 핵심 요약, 배경 문맥, 문서 맵 |
+
+```bash
+# 변경 추적 목적으로 파이프라인 실행
+python3 confluence-curation/scripts/synthesize_insights.py \
+  --manifest /tmp/evidence-manifest.json --output /tmp/insights.json --purpose change-tracking
+python3 confluence-curation/scripts/review_insights.py \
+  --input /tmp/insights.json --output /tmp/review.json --purpose change-tracking
+python3 confluence-curation/scripts/curate_confluence.py \
+  --input /tmp/merged.json --insights-input /tmp/insights.json \
+  --review-input /tmp/review.json --output /tmp/report.md --purpose change-tracking
 ```
 
 ## 파이프라인 아키텍처
@@ -136,13 +160,13 @@ python3 confluence-curation/scripts/curate_confluence.py \
       report.md          │      extract_evidence
                          │              │
                          │              ▼
-                         │      synthesize_insights
+                         │      synthesize_insights (--purpose)
                          │              │
                          │              ▼
-                         │      review_insights
+                         │      review_insights (--purpose)
                          │              │
                          │              ▼
-                         └──► curate_confluence (+ insights + review)
+                         └──► curate_confluence (--purpose + insights + review)
                                         │
                                         ▼
                                    report.md + summary.json
@@ -159,9 +183,9 @@ python3 confluence-curation/scripts/curate_confluence.py \
 | `normalize_confluence.py` | 문장 분리, 키워드 추출, 클레임 식별 | - |
 | `cluster_confluence.py` | 관련 페이지를 주제 그룹으로 묶기 | - |
 | `extract_evidence.py` | 주제별 근거 팩 생성 | - |
-| `synthesize_insights.py` | 주제별 인사이트 합성 | - |
-| `review_insights.py` | 4개 관점 검증 (최신성, 신뢰도, 모순, 실행가능성) | - |
-| `curate_confluence.py` | 최종 한글 리포트 생성 | - |
+| `synthesize_insights.py` | 주제별 인사이트 합성 (`--purpose` 지원) | - |
+| `review_insights.py` | 4개 관점 검증, 목적별 가중치 (`--purpose` 지원) | - |
+| `curate_confluence.py` | 목적별 한글 리포트 생성 (`--purpose` 지원) | - |
 | `smoke_pipeline.py` | fixture 기반 회귀 테스트 | - |
 
 ## 프로젝트 구조
@@ -181,7 +205,12 @@ curator-skills/
 │       ├── scoring.md                 # 최신성·신뢰도 채점 기준
 │       ├── insight-architecture.md    # 단계별 분석 아키텍처
 │       ├── review-rubric.md           # 리뷰 검증 체크리스트
-│       ├── output-template.md         # 한글 출력 포맷 기준
+│       ├── output-template.md         # 한글 출력 포맷 기준 (general 목적)
+│       ├── purpose-registry.md        # 목적별 템플릿 ���지스트리
+│       ├── purposes/                  # 목적별 출력 템플릿
+│       │   ├── _base.md               # 공통 어투·상태 라벨 규칙
+│       │   ├── change-tracking.md     # 변경 추적 + 트렌드 감지
+│       │   └── onboarding.md          # 온보딩/학습
 │       ├── implementation-roadmap.md  # 구현 로드맵
 │       └── staged-pipeline-release-notes.md  # 릴리즈 노트
 └── tmp/                               # 임시 산출물

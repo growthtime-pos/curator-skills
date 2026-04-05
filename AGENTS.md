@@ -3,7 +3,7 @@
 ## Scope
 
 - This repository currently contains the main `confluence-curation/` skill package and the extension skill under `confluence-curation/extensions/preferred-space-expansion/`.
-- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/confluence_config.py`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/configure_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, the preferred-space expansion files under `confluence-curation/extensions/preferred-space-expansion/`, and the planning references under `confluence-curation/references/`.
+- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/confluence_config.py`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/configure_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, `confluence-curation/scripts/synthesize_insights.py`, `confluence-curation/scripts/review_insights.py`, the preferred-space expansion files under `confluence-curation/extensions/preferred-space-expansion/`, and the planning references under `confluence-curation/references/` (including purpose-specific templates under `confluence-curation/references/purposes/`).
 - The Python code is stdlib-only; there is no `pyproject.toml`, `requirements.txt`, `package.json`, or Makefile on the current `main` branch.
 - There is no checked-in test suite yet, so validation is mostly smoke testing and syntax checking.
 
@@ -22,9 +22,13 @@
 - `confluence-curation/scripts/fetch_confluence.py` is the networked data collection CLI.
 - `confluence-curation/scripts/configure_confluence.py` is the local credential and connection config manager.
 - `confluence-curation/scripts/merge_fetched.py` merges and deduplicates multiple fetch result files.
-- `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator.
+- `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator; supports `--purpose` flag for purpose-specific output (`general`, `change-tracking`, `onboarding`).
+- `confluence-curation/scripts/synthesize_insights.py` generates topic-level insights from evidence packs; supports `--purpose` flag for purpose-specific conclusion framing and action generation.
+- `confluence-curation/scripts/review_insights.py` runs second-pass review over synthesized insights; supports `--purpose` flag for purpose-specific reviewer weighting.
 - `confluence-curation/extensions/preferred-space-expansion/` contains the preferred-space expansion skill, schema notes, and expansion CLI.
 - `confluence-curation/references/` contains prompt, bootstrap, scoring, architecture, and review references, not executable code.
+- `confluence-curation/references/purposes/` contains purpose-specific output template definitions (`_base.md`, `change-tracking.md`, `onboarding.md`).
+- `confluence-curation/references/purpose-registry.md` is the master index of available curation purposes, trigger phrases, and CLI flag mappings.
 - `confluence-curation/scripts/__pycache__/` is generated output and should not be edited by hand.
 
 ## Runtime Assumptions
@@ -39,7 +43,7 @@
 - There is no formal build pipeline today.
 - Fast syntax build-equivalent for all scripts:
   ```bash
-  python3 -m py_compile confluence-curation/scripts/confluence_config.py confluence-curation/scripts/configure_confluence.py confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/merge_fetched.py
+  python3 -m py_compile confluence-curation/scripts/confluence_config.py confluence-curation/scripts/configure_confluence.py confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/merge_fetched.py confluence-curation/scripts/synthesize_insights.py confluence-curation/scripts/review_insights.py
   ```
 - Syntax build-equivalent including the preferred-space expansion script:
   ```bash
@@ -127,7 +131,7 @@
   1. Run `configure_confluence.py status --json` and confirm the active config source/path and any missing fields.
   2. Run `fetch_confluence.py` with a small scope and `--output tmp/fetch.json`.
   3. For the legacy flow, run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
-  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py`, `extract_evidence.py`, `synthesize_insights.py`, `review_insights.py`, then `curate_confluence.py --insights-input ... --review-input ...`.
+  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py`, `extract_evidence.py`, `synthesize_insights.py --purpose {purpose}`, `review_insights.py --purpose {purpose}`, then `curate_confluence.py --insights-input ... --review-input ... --purpose {purpose}`. Valid purposes: `general` (default), `change-tracking`, `onboarding`.
   5. Inspect the JSON and Markdown for schema and content regressions.
   6. For a fast regression check, prefer `python3 confluence-curation/scripts/smoke_pipeline.py`.
 
