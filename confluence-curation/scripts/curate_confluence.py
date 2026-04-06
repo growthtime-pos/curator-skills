@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--expansion-input")
+    parser.add_argument("--preferred-space-inference-input")
     parser.add_argument("--insights-input")
     parser.add_argument("--review-input")
     parser.add_argument("--top-n", type=int, default=20)
@@ -585,6 +586,27 @@ def build_markdown_general(
         lines.append("- 선호 space 내부의 연관 문서를 추가 탐색해 검토 범위와 우선순위를 보강했습니다.")
     lines.append("")
 
+    if insights_payload:
+        lines.append("## 지금 주목해야 할 주제")
+        topics = insights_payload.get("insights", [])[:5]
+        if topics:
+            for insight in topics:
+                why_now = (
+                    (insight.get("recent_change_summary") or [None])[0]
+                    or (insight.get("conflict_notes") or [None])[0]
+                    or insight.get("conclusion")
+                )
+                lines.append(f"- **{insight.get('label') or insight.get('topic_id')}**: {why_now}")
+        else:
+            lines.append("- 현재 시점에 별도로 부각할 주제가 충분하지 않습니다.")
+        lines.append("")
+
+    lines.append("## 우선 읽을 문서")
+    for item in scored_pages[:5]:
+        reason = (item.get("evidence") or ["우선순위 상위 문서입니다."])[0]
+        lines.append(f"- **{item['title']}**: {reason}")
+    lines.append("")
+
     topic_lines = build_topic_insight_lines(insights_payload, review_payload, "general")
     if topic_lines:
         lines.extend(topic_lines)
@@ -918,10 +940,14 @@ def main() -> int:
         payload = json.load(handle)
     expansion_payload = read_json(args.expansion_input)
     payload = merge_expansion_payload(payload, expansion_payload)
+    preferred_space_inference_payload = read_json(args.preferred_space_inference_input)
     insights_payload = read_json(args.insights_input)
     review_payload = read_json(args.review_input)
 
     meta = payload.get("meta", {})
+    if preferred_space_inference_payload:
+        meta["inferred_preferred_spaces"] = preferred_space_inference_payload.get("preferred_spaces", [])
+        meta["preferred_space_inference"] = preferred_space_inference_payload
     pages = payload.get("pages", [])
     warnings = payload.get("warnings", [])
     relationships = payload.get("relationships", [])
@@ -1065,6 +1091,12 @@ def main() -> int:
                 )
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
 
+    change_focus_summary = []
+    for event in timeline[:5]:
+        summary = event.get("summary_ko")
+        if summary and summary not in change_focus_summary:
+            change_focus_summary.append(summary)
+
     trusted_data = synthesize_trusted_data(scored_pages, page_lookup)
     synthesized_overview = synthesize_overview(scored_pages, page_lookup)
 
@@ -1109,6 +1141,20 @@ def main() -> int:
             "trusted_data": trusted_data,
             "insights_summary": (insights_payload or {}).get("summary"),
             "review_summary": (review_payload or {}).get("summary"),
+            "attention_topics": [
+                {
+                    "topic_id": insight.get("topic_id"),
+                    "label": insight.get("label"),
+                    "why_now": (
+                        (insight.get("recent_change_summary") or [None])[0]
+                        or (insight.get("conflict_notes") or [None])[0]
+                        or insight.get("conclusion")
+                    ),
+                }
+                for insight in (insights_payload or {}).get("insights", [])[:5]
+            ],
+            "change_drivers": change_focus_summary,
+            "preferred_space_inference": preferred_space_inference_payload,
             "timeline": timeline[:50],
             "warnings": warnings,
         }
@@ -1168,6 +1214,8 @@ def main() -> int:
             "feature_latest_path": feature_paths["latest_path"],
             "feature_history_path": feature_paths["history_path"],
         }
+        if change_focus_summary:
+            summary_payload["meta"]["data_artifacts"]["change_focus_summary"] = change_focus_summary
         with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
             json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
