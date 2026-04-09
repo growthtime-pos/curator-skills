@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+SYNTHESIS_STRATEGIES = {
+    "balanced-synthesis",
+    "briefing-synthesis",
+    "action-heavy-synthesis",
+}
 
 
 def iso_now() -> str:
@@ -22,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-actions", type=int, default=3)
     parser.add_argument("--max-snippets", type=int, default=3)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--strategy", default="balanced-synthesis", choices=sorted(SYNTHESIS_STRATEGIES))
     return parser.parse_args()
 
 
@@ -62,7 +68,7 @@ def choose_evidence_snippets(pack: Dict[str, Any], max_snippets: int) -> List[Di
     return snippets[:max_snippets]
 
 
-def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
+def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", strategy: str = "balanced-synthesis") -> str:
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
@@ -71,6 +77,11 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
     if purpose == "change-tracking":
         change_count = len(recent_changes)
         if current and change_count > 0:
+            if strategy == "action-heavy-synthesis":
+                return (
+                    f"이 주제에서는 최근 {change_count}건의 변경이 감지되었고, "
+                    f"`{current.get('title')}` 중심으로 추적과 후속 조치가 필요합니다."
+                )
             return (
                 f"이 주제에서는 최근 {change_count}건의 변경이 감지되었으며, "
                 f"`{current.get('title')}` 를 중심으로 활발한 업데이트가 이루어지고 있습니다."
@@ -80,6 +91,8 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
         return "이 주제에서는 최근 의미 있는 변경 활동이 관측되지 않았습니다."
 
     if purpose == "onboarding":
+        if strategy == "briefing-synthesis" and current:
+            return f"이 주제의 첫 읽기 문서로는 `{current.get('title')}` 를 추천합니다."
         if current and trusted and current.get("page_id") == trusted.get("page_id"):
             return f"이 주제를 처음 접한다면 `{current.get('title')}` 부터 읽는 것을 추천합니다. 가장 최신이면서 신뢰도도 높은 문서입니다."
         if current and trusted:
@@ -94,6 +107,8 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
         return "이 주제는 시작점으로 삼을 만한 문서가 아직 충분하지 않습니다."
 
     # general (기존 로직)
+    if strategy == "briefing-synthesis" and current:
+        return f"현재 이 주제의 기준 문서는 `{current.get('title')}` 로 보는 편이 가장 안전합니다."
     if current and trusted and current.get("page_id") == trusted.get("page_id"):
         return f"이 주제의 현재 작업 기준 문서로는 `{current.get('title')}` 를 우선 참고하는 것이 적절합니다."
     if current and trusted:
@@ -125,7 +140,12 @@ def derive_gap_summary(pack: Dict[str, Any]) -> List[str]:
     return gaps
 
 
-def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "general") -> List[str]:
+def derive_actions(
+    pack: Dict[str, Any],
+    max_actions: int,
+    purpose: str = "general",
+    strategy: str = "balanced-synthesis",
+) -> List[str]:
     actions: List[str] = []
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
@@ -174,6 +194,14 @@ def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "gener
         if pack.get("missing_signals"):
             actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
 
+    if strategy == "action-heavy-synthesis":
+        if recent_changes:
+            actions.append("최근 변경 내용을 담당자 확인 없이 운영 기준으로 바로 반영하지 말고 변경 의도를 검증하세요.")
+        if conflict_notes:
+            actions.append("충돌 메모가 남은 문서는 이번 주 안에 기준 문서/배경 문서로 역할을 분리하세요.")
+    elif strategy == "briefing-synthesis":
+        actions = actions[: max(1, min(max_actions, 2))]
+
     deduped: List[str] = []
     for action in actions:
         if action not in deduped:
@@ -202,8 +230,14 @@ def calibrate_confidence(pack: Dict[str, Any]) -> str:
     return "low"
 
 
-def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, purpose: str = "general") -> Dict[str, Any]:
-    conclusion = derive_conclusion(pack, purpose)
+def synthesize_topic(
+    pack: Dict[str, Any],
+    max_actions: int,
+    max_snippets: int,
+    purpose: str = "general",
+    strategy: str = "balanced-synthesis",
+) -> Dict[str, Any]:
+    conclusion = derive_conclusion(pack, purpose, strategy)
     confidence = calibrate_confidence(pack)
     evidence_page_ids = sorted(
         {
@@ -222,6 +256,7 @@ def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, 
         "topic_id": pack.get("topic_id"),
         "label": pack.get("label"),
         "conclusion": conclusion,
+        "strategy": strategy,
         "confidence": confidence,
         "confidence_ko": CONFIDENCE_KO.get(confidence, "알 수 없음"),
         "current_reference": summarize_candidate(pack.get("current_candidate")),
@@ -234,7 +269,7 @@ def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, 
         ],
         "conflict_notes": pack.get("conflict_notes", []),
         "evidence_gaps": derive_gap_summary(pack),
-        "suggested_actions": derive_actions(pack, max_actions, purpose),
+        "suggested_actions": derive_actions(pack, max_actions, purpose, strategy),
         "evidence_page_ids": evidence_page_ids,
         "evidence_snippets": choose_evidence_snippets(pack, max_snippets),
         "warnings": pack.get("warnings", []),
@@ -269,7 +304,11 @@ def main() -> int:
             continue
         pack = read_json(pack_path)
         max_snippets = args.max_snippets if args.purpose != "onboarding" else max(args.max_snippets, 5)
-        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose))
+        if args.strategy == "briefing-synthesis":
+            max_snippets = min(max_snippets, 2)
+        if args.strategy == "action-heavy-synthesis":
+            args.max_actions = max(args.max_actions, 4)
+        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose, args.strategy))
 
     insights.sort(
         key=lambda item: (
@@ -285,6 +324,7 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "synthesize_insights",
             "purpose": args.purpose,
+            "strategy": args.strategy,
             "manifest": args.manifest,
             "topic_count": len(insights),
         },

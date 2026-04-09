@@ -127,6 +127,56 @@ def assert_feature_artifacts(workdir: Path) -> None:
         assert_file_exists(path)
 
 
+def assert_legacy_report_contents(report_path: Path) -> None:
+    text = report_path.read_text(encoding="utf-8")
+    for fragment in [
+        "## 요약",
+        "## 우선 읽을 문서",
+        "## 문서 현황",
+        "## 추천 결론",
+    ]:
+        if fragment not in text:
+            raise RuntimeError(f"legacy report 에 필요한 문구가 없습니다: {fragment}")
+
+
+def assert_orchestrator_outputs(workdir: Path, expected_cluster: str, expected_synthesize: str, expected_validate: str) -> None:
+    pipeline_plan = read_json(workdir / "pipeline_plan.json")
+    pipeline_result = read_json(workdir / "pipeline_result.json")
+    selected = pipeline_plan.get("selected_methods", {})
+
+    if selected.get("stage2_cluster") != expected_cluster:
+        raise RuntimeError(f"orchestrator cluster method mismatch: {selected.get('stage2_cluster')} != {expected_cluster}")
+    if selected.get("stage4_synthesize") != expected_synthesize:
+        raise RuntimeError(
+            f"orchestrator synthesize method mismatch: {selected.get('stage4_synthesize')} != {expected_synthesize}"
+        )
+    if selected.get("stage5_validate") != expected_validate:
+        raise RuntimeError(
+            f"orchestrator validate method mismatch: {selected.get('stage5_validate')} != {expected_validate}"
+        )
+
+    for name in [
+        "pipeline_plan.json",
+        "pipeline_result.json",
+        "preferred-spaces.json",
+        "merged-expanded.json",
+        "normalized.json",
+        "clusters.json",
+        "evidence-manifest.json",
+        "insights.json",
+        "review.json",
+        "report.md",
+        "summary.json",
+        "brief.json",
+        "brief.md",
+    ]:
+        assert_file_exists(workdir / name)
+
+    if not pipeline_result.get("artifacts", {}).get("report"):
+        raise RuntimeError("pipeline_result.json 에 report artifact가 없습니다.")
+    assert_report_contents(workdir / "report.md")
+
+
 def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Dict[str, Any]) -> Dict[str, Any]:
     pages = list(payload.get("pages", []))
     people = list(payload.get("people", []))
@@ -205,6 +255,8 @@ def main() -> int:
     root = repo_root()
     fixture = (root / args.fixture).resolve()
     workdir = (root / args.workdir).resolve()
+    orchestrated_default_dir = workdir / "orchestrated-default"
+    orchestrated_alt_dir = workdir / "orchestrated-alt"
     expansion_fixture = (
         root / "confluence-curation/fixtures/preferred_space_expanded_fixture.json"
     ).resolve()
@@ -398,6 +450,21 @@ def main() -> int:
     assert_feature_artifacts(workdir)
     assert_report_contents(workdir / "report.md", "general")
 
+    # -- legacy compatibility check --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/curate_confluence.py",
+            "--input",
+            str(fixture),
+            "--output",
+            str(workdir / "legacy-report.md"),
+        ],
+        root,
+    )
+    assert_file_exists(workdir / "legacy-report.md")
+    assert_legacy_report_contents(workdir / "legacy-report.md")
+
     # -- purpose-specific report tests --
     for purpose in ["change-tracking", "onboarding"]:
         purpose_report = workdir / f"report-{purpose}.md"
@@ -429,10 +496,69 @@ def main() -> int:
         assert_file_exists(purpose_report)
         assert_report_contents(purpose_report, purpose)
 
+    # -- orchestrator default methods --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/orchestrate_pipeline.py",
+            "--fetch-input",
+            str(fixture),
+            "--expansion-input",
+            str(expansion_fixture),
+            "--output-dir",
+            str(orchestrated_default_dir),
+            "--followup-question",
+            "최근 뭐가 바뀌었나",
+            "--followup-question",
+            "그래서 내가 뭘 해야 하나",
+            "--non-interactive",
+        ],
+        root,
+    )
+    assert_orchestrator_outputs(
+        orchestrated_default_dir,
+        "heuristic-cluster",
+        "balanced-synthesis",
+        "balanced-validator",
+    )
+
+    # -- orchestrator alternate method combination --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/orchestrate_pipeline.py",
+            "--fetch-input",
+            str(fixture),
+            "--expansion-input",
+            str(expansion_fixture),
+            "--output-dir",
+            str(orchestrated_alt_dir),
+            "--cluster-method",
+            "keyword-heavy-cluster",
+            "--analyze-method",
+            "change-first-analysis",
+            "--synthesize-method",
+            "briefing-synthesis",
+            "--validate-method",
+            "strict-validator",
+            "--non-interactive",
+        ],
+        root,
+    )
+    assert_orchestrator_outputs(
+        orchestrated_alt_dir,
+        "keyword-heavy-cluster",
+        "briefing-synthesis",
+        "strict-validator",
+    )
+
     if not args.keep_artifacts:
         shutil.rmtree(workdir)
 
-    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 (general + change-tracking + onboarding).")
+    print(
+        "Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 "
+        "(legacy + staged + orchestrated default/alternate + change-tracking + onboarding)."
+    )
     return 0
 
 

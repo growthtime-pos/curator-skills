@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+ANALYSIS_STRATEGIES = {
+    "balanced-analysis",
+    "trust-first-analysis",
+    "change-first-analysis",
+}
 
 
 def iso_now() -> str:
@@ -23,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--emit-manifest")
     parser.add_argument("--max-snippets", type=int, default=4)
     parser.add_argument("--max-maintainers", type=int, default=4)
+    parser.add_argument("--strategy", default="balanced-analysis", choices=sorted(ANALYSIS_STRATEGIES))
     return parser.parse_args()
 
 
@@ -88,19 +94,37 @@ def page_trust_score(page: Dict[str, Any]) -> int:
     return min(int(round(score)), 100)
 
 
-def candidate_sort_key(page: Dict[str, Any], mode: str) -> Tuple[int, int, int, str]:
+def page_change_score(page: Dict[str, Any]) -> int:
+    score = 0
+    score += min(len(page.get("version_events", [])), 5) * 6
+    score += min(int(((page.get("change_summary") or {}).get("importance_score", 0) or 0)), 25)
+    if (page.get("change_summary") or {}).get("changed"):
+        score += 12
+    return min(score, 100)
+
+
+def candidate_sort_key(page: Dict[str, Any], mode: str, strategy: str) -> Tuple[int, int, int, str]:
     freshness = page_freshness_score(page)
     trust = page_trust_score(page)
+    change = page_change_score(page)
     updated_days = page.get("updated_days_ago")
     updated_rank = -(999999 if updated_days is None else (999999 - updated_days))
     if mode == "current":
+        if strategy == "trust-first-analysis":
+            return (trust, freshness, change, page.get("page_id", ""))
+        if strategy == "change-first-analysis":
+            return (change, freshness, trust, page.get("page_id", ""))
         return (freshness, trust, len(page.get("recent_contributors", [])), page.get("page_id", ""))
     if mode == "trusted":
+        if strategy == "change-first-analysis":
+            return (change, trust, freshness, page.get("page_id", ""))
         return (trust, freshness, len(page.get("ancestors", [])), page.get("page_id", ""))
+    if strategy == "change-first-analysis":
+        return (-change, trust, -len(page.get("recent_contributors", [])), updated_rank)
     return (-freshness, trust, -len(page.get("recent_contributors", [])), updated_rank)
 
 
-def choose_candidates(cluster_pages: List[Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
+def choose_candidates(cluster_pages: List[Dict[str, Any]], strategy: str) -> Dict[str, Optional[Dict[str, Any]]]:
     if not cluster_pages:
         return {
             "current": None,
@@ -108,14 +132,18 @@ def choose_candidates(cluster_pages: List[Dict[str, Any]]) -> Dict[str, Optional
             "stale": None,
         }
 
-    current = max(cluster_pages, key=lambda page: candidate_sort_key(page, "current"))
-    trusted = max(cluster_pages, key=lambda page: candidate_sort_key(page, "trusted"))
+    current = max(cluster_pages, key=lambda page: candidate_sort_key(page, "current", strategy))
+    trusted = max(cluster_pages, key=lambda page: candidate_sort_key(page, "trusted", strategy))
     stale_candidates = [
         page
         for page in cluster_pages
         if page.get("updated_days_ago") is not None and page.get("updated_days_ago", 0) > 60
     ]
-    stale = max(stale_candidates, key=lambda page: candidate_sort_key(page, "stale")) if stale_candidates else None
+    stale = (
+        max(stale_candidates, key=lambda page: candidate_sort_key(page, "stale", strategy))
+        if stale_candidates
+        else None
+    )
     return {
         "current": current,
         "trusted": trusted,
@@ -246,6 +274,7 @@ def page_summary(page: Optional[Dict[str, Any]], max_snippets: int) -> Optional[
         "updated_days_ago": page.get("updated_days_ago"),
         "freshness_score": page_freshness_score(page),
         "trust_score": page_trust_score(page),
+        "change_score": page_change_score(page),
         "change_summary": page.get("change_summary", {}),
         "recent_contributors": page.get("recent_contributors", []),
         "labels": page.get("labels", []),
@@ -261,9 +290,10 @@ def build_evidence_pack(
     warnings: List[str],
     max_snippets: int,
     max_maintainers: int,
+    strategy: str,
 ) -> Dict[str, Any]:
     cluster_pages = [normalized_pages[page_id] for page_id in cluster.get("page_ids", []) if page_id in normalized_pages]
-    candidates = choose_candidates(cluster_pages)
+    candidates = choose_candidates(cluster_pages, strategy)
     evidence_snippets: List[Dict[str, Any]] = []
     for page in cluster_pages:
         snippets = pick_snippets(page, max_snippets)
@@ -281,6 +311,7 @@ def build_evidence_pack(
         "label": cluster.get("label"),
         "confidence": cluster.get("confidence"),
         "confidence_ko": CONFIDENCE_KO.get(cluster.get("confidence"), "알 수 없음"),
+        "strategy": strategy,
         "page_ids": cluster.get("page_ids", []),
         "current_candidate": page_summary(candidates.get("current"), max_snippets),
         "trusted_candidate": page_summary(candidates.get("trusted"), max_snippets),
@@ -323,6 +354,7 @@ def main() -> int:
             warnings,
             args.max_snippets,
             args.max_maintainers,
+            args.strategy,
         )
         output_path = os.path.abspath(os.path.join(args.output_dir, f"{pack['topic_id']}.json"))
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -345,6 +377,7 @@ def main() -> int:
                 "source_type": "extract_evidence",
                 "normalized_input": args.normalized_input,
                 "clusters_input": args.clusters_input,
+                "strategy": args.strategy,
                 "pack_count": len(manifest),
             },
             "packs": manifest,

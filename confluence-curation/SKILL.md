@@ -83,11 +83,12 @@ python3 confluence-curation/scripts/configure_confluence.py clear
 12. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
 13. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
 14. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
-15. Run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
-16. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
-17. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
-18. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
-19. Call out ambiguity explicitly instead of hiding it.
+15. If the user wants per-stage method selection, run `scripts/orchestrate_pipeline.py` and let it choose methods for `pre_analysis / extract / cluster / analyze / synthesize / validate`, then persist `pipeline_plan.json`.
+16. Otherwise run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
+17. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
+18. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
+19. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
+20. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -111,6 +112,36 @@ When the user wants more than page ranking, use a staged workflow inspired by ar
 12. When needed, generate a separate briefing artifact and use saved artifacts to answer follow-up questions.
 
 Prefer saving intermediate artifacts instead of hiding all reasoning inside one final summary.
+
+## Stage-Selectable Pipeline
+
+When the user wants stage-by-stage method choice, use the master orchestrator instead of hand-wiring every script.
+
+Stage model:
+
+1. `stage0_pre_analysis`
+2. `stage1_extract`
+3. `stage2_cluster`
+4. `stage3_analyze`
+5. `stage4_synthesize`
+6. `stage5_validate`
+
+Rules:
+
+- treat `extract` and `analyze` as tool-first stages
+- treat `pre_analysis`, `cluster`, `synthesize`, and `validate` as method-selectable stages
+- keep stage outputs as JSON artifacts even when the stage behaves like a skill
+- write `pipeline_plan.json` and `pipeline_result.json` for reruns and debugging
+
+Primary entry point:
+
+```bash
+python3 confluence-curation/scripts/orchestrate_pipeline.py --fetch-input /tmp/confluence.json --output-dir /tmp/pipeline-run
+```
+
+Reference:
+
+- [references/pipeline-stage-model.md](references/pipeline-stage-model.md)
 
 ## Core Judgment Rules
 

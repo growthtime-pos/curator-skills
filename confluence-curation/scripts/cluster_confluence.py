@@ -13,6 +13,46 @@ from typing import Any, Dict, List, Optional, Set
 from data_store import default_data_dir, persist_feature_state
 
 
+STRATEGY_CONFIGS: Dict[str, Dict[str, float]] = {
+    "heuristic-cluster": {
+        "title_threshold": 0.82,
+        "keyword_overlap": 2,
+        "shared_contributors": 1,
+        "title_weight": 3.0,
+        "keyword_weight": 2.0,
+        "contributor_weight": 1.5,
+        "label_weight": 1.0,
+        "ancestor_weight": 1.5,
+        "relationship_weight": 2.0,
+        "minimum_score": 3.0,
+    },
+    "keyword-heavy-cluster": {
+        "title_threshold": 0.74,
+        "keyword_overlap": 1,
+        "shared_contributors": 1,
+        "title_weight": 2.2,
+        "keyword_weight": 3.0,
+        "contributor_weight": 1.0,
+        "label_weight": 1.0,
+        "ancestor_weight": 1.0,
+        "relationship_weight": 1.6,
+        "minimum_score": 2.8,
+    },
+    "hierarchy-first-cluster": {
+        "title_threshold": 0.78,
+        "keyword_overlap": 2,
+        "shared_contributors": 1,
+        "title_weight": 2.4,
+        "keyword_weight": 1.6,
+        "contributor_weight": 1.0,
+        "label_weight": 1.0,
+        "ancestor_weight": 2.6,
+        "relationship_weight": 2.8,
+        "minimum_score": 3.0,
+    },
+}
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
@@ -21,11 +61,27 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Cluster normalized Confluence pages into topic groups.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--title-threshold", type=float, default=0.82)
-    parser.add_argument("--keyword-overlap", type=int, default=2)
-    parser.add_argument("--shared-contributors", type=int, default=1)
+    parser.add_argument(
+        "--strategy",
+        default="heuristic-cluster",
+        choices=sorted(STRATEGY_CONFIGS.keys()),
+    )
+    parser.add_argument("--title-threshold", type=float)
+    parser.add_argument("--keyword-overlap", type=int)
+    parser.add_argument("--shared-contributors", type=int)
     parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
     return parser.parse_args()
+
+
+def strategy_config(args: argparse.Namespace) -> Dict[str, float]:
+    config = dict(STRATEGY_CONFIGS[args.strategy])
+    if args.title_threshold is not None:
+        config["title_threshold"] = args.title_threshold
+    if args.keyword_overlap is not None:
+        config["keyword_overlap"] = float(args.keyword_overlap)
+    if args.shared_contributors is not None:
+        config["shared_contributors"] = float(args.shared_contributors)
+    return config
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -82,9 +138,7 @@ def relationship_link_types(left: Dict[str, Any], right_page_id: str) -> List[st
 def pair_evidence(
     left: Dict[str, Any],
     right: Dict[str, Any],
-    title_threshold: float,
-    keyword_overlap: int,
-    shared_contributors_threshold: int,
+    config: Dict[str, float],
 ) -> Optional[Dict[str, Any]]:
     title_score = title_similarity(left.get("title", ""), right.get("title", ""))
     shared_keywords = shared_keyword_count(left, right)
@@ -95,26 +149,26 @@ def pair_evidence(
 
     reasons: List[str] = []
     score = 0.0
-    if title_score >= title_threshold:
+    if title_score >= config["title_threshold"]:
         reasons.append(f"title_similarity={title_score:.2f}")
-        score += 3.0
-    if shared_keywords >= keyword_overlap:
+        score += config["title_weight"]
+    if shared_keywords >= int(config["keyword_overlap"]):
         reasons.append(f"shared_keywords={shared_keywords}")
-        score += 2.0
-    if shared_contributors >= shared_contributors_threshold:
+        score += config["keyword_weight"]
+    if shared_contributors >= int(config["shared_contributors"]):
         reasons.append(f"shared_contributors={shared_contributors}")
-        score += 1.5
+        score += config["contributor_weight"]
     if shared_labels >= 1:
         reasons.append(f"shared_labels={shared_labels}")
-        score += 1.0
+        score += config["label_weight"]
     if same_ancestor:
         reasons.append("shared_ancestor")
-        score += 1.5
+        score += config["ancestor_weight"]
     if direct_links:
         reasons.append("relationship=" + ",".join(sorted(set(direct_links))))
-        score += 2.0
+        score += config["relationship_weight"]
 
-    if score < 3.0:
+    if score < config["minimum_score"]:
         return None
     return {
         "left_page_id": left.get("page_id"),
@@ -126,20 +180,12 @@ def pair_evidence(
 
 def build_adjacency(
     pages: List[Dict[str, Any]],
-    title_threshold: float,
-    keyword_overlap: int,
-    shared_contributors_threshold: int,
+    config: Dict[str, float],
 ) -> Dict[str, List[Dict[str, Any]]]:
     adjacency: Dict[str, List[Dict[str, Any]]] = {page["page_id"]: [] for page in pages}
     for index, left in enumerate(pages):
         for right in pages[index + 1 :]:
-            evidence = pair_evidence(
-                left,
-                right,
-                title_threshold,
-                keyword_overlap,
-                shared_contributors_threshold,
-            )
+            evidence = pair_evidence(left, right, config)
             if not evidence:
                 continue
             adjacency[left["page_id"]].append(evidence)
@@ -293,23 +339,21 @@ def summarize_clusters(clusters: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
+    config = strategy_config(args)
     with open(args.input, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
 
     pages = payload.get("pages", [])
-    adjacency = build_adjacency(pages, args.title_threshold, args.keyword_overlap, args.shared_contributors)
+    adjacency = build_adjacency(pages, config)
     clusters = build_clusters(pages, adjacency)
 
     result = {
         "meta": {
             "generated_at": iso_now(),
-            "source_type": "normalize_confluence",
+            "source_type": "cluster_confluence",
             "source_meta": payload.get("meta", {}),
-            "thresholds": {
-                "title_threshold": args.title_threshold,
-                "keyword_overlap": args.keyword_overlap,
-                "shared_contributors": args.shared_contributors,
-            },
+            "strategy": args.strategy,
+            "thresholds": config,
         },
         "summary": summarize_clusters(clusters),
         "clusters": clusters,
