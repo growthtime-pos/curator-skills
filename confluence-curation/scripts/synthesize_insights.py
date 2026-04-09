@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
+ANALYSIS_METHODS = ["evidence-first", "pyramid", "hypothesis-driven"]
 
 
 def iso_now() -> str:
@@ -22,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-actions", type=int, default=3)
     parser.add_argument("--max-snippets", type=int, default=3)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--analysis-method", default="evidence-first", choices=ANALYSIS_METHODS)
     return parser.parse_args()
 
 
@@ -62,7 +64,145 @@ def choose_evidence_snippets(pack: Dict[str, Any], max_snippets: int) -> List[Di
     return snippets[:max_snippets]
 
 
-def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
+def build_support_items(pack: Dict[str, Any]) -> List[str]:
+    items: List[str] = []
+    current = pack.get("current_candidate")
+    trusted = pack.get("trusted_candidate")
+    stale = pack.get("stale_candidate")
+
+    if current:
+        items.append(
+            f"현재 작업 기준 후보는 `{current.get('title')}` 이며 최신성 신호는 {current.get('updated_days_ago')}일 전 업데이트 기준입니다."
+        )
+    if trusted and trusted.get("page_id") != (current or {}).get("page_id"):
+        items.append(
+            f"배경/정책 맥락은 `{trusted.get('title')}` 에 더 강하게 남아 있어 실행 문서와 참고 문서가 분리되어 있습니다."
+        )
+    if pack.get("recent_changes"):
+        items.append(f"최근 변경 신호가 {len(pack.get('recent_changes', []))}건 있어 문서 운영 상태가 계속 변하고 있습니다.")
+    if pack.get("conflict_notes"):
+        items.append(f"충돌 또는 중복 신호가 {len(pack.get('conflict_notes', []))}건 있어 기준 문서 정리가 필요합니다.")
+    if stale:
+        items.append(f"`{stale.get('title')}` 는 오래된 참고 후보로 남아 있어 재사용 전에 검증이 필요합니다.")
+    if pack.get("missing_signals"):
+        items.append("근거 또는 프로필 신호가 일부 비어 있어 단정적 결론을 피해야 합니다.")
+
+    deduped: List[str] = []
+    for item in items:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def derive_key_supports(pack: Dict[str, Any], max_supports: int = 3) -> List[str]:
+    return build_support_items(pack)[:max_supports]
+
+
+def derive_wider_significance(pack: Dict[str, Any], purpose: str = "general") -> str:
+    current = pack.get("current_candidate")
+    trusted = pack.get("trusted_candidate")
+    if pack.get("conflict_notes"):
+        return "문서가 여러 갈래로 운영되고 있어 팀이 실제 작업 기준과 배경 정책 문서를 명시적으로 분리해야 합니다."
+    if pack.get("missing_signals"):
+        return "현재 문서 체계는 참고는 가능하지만, 운영 기준으로 쓰기 전에 추가 검증과 소유자 확인이 필요합니다."
+    if current and trusted and current.get("page_id") == trusted.get("page_id"):
+        if purpose == "onboarding":
+            return "신규 인원이 한 문서에서 최신 정보와 배경 맥락을 함께 확보할 수 있어 진입 비용이 낮습니다."
+        return "최신성과 신뢰가 한 문서에 수렴해 있어 팀 기준 문서로 통합 관리하기 좋은 상태입니다."
+    if current and trusted:
+        return "최신 실행 문서와 배경 정책 문서가 분리되어 있어 링크 정리나 읽기 순서 안내가 필요합니다."
+    if current:
+        return "실행 기준 후보는 보이지만 보강 근거가 약해 운영 리스크가 남아 있습니다."
+    return "의미 있는 기준 문서를 특정하기 어려워 문서 구조 자체의 재정리가 필요합니다."
+
+
+def derive_hypothesis(pack: Dict[str, Any], purpose: str = "general") -> str:
+    current = pack.get("current_candidate")
+    trusted = pack.get("trusted_candidate")
+    if purpose == "change-tracking" and current:
+        return f"이 주제의 운영 기준은 최근 변경이 집중된 `{current.get('title')}` 로 이동하고 있다."
+    if current and trusted and current.get("page_id") == trusted.get("page_id"):
+        return f"`{current.get('title')}` 가 현재 작업 기준과 배경 참고를 동시에 만족하는 단일 기준 문서다."
+    if current and trusted:
+        return f"`{current.get('title')}` 는 실행 기준이고 `{trusted.get('title')}` 는 배경 정책 문서다."
+    if current:
+        return f"`{current.get('title')}` 가 가장 유력한 작업 기준 문서다."
+    return "이 주제는 아직 신뢰할 만한 기준 문서가 정리되지 않았다."
+
+
+def derive_validation_points(pack: Dict[str, Any]) -> List[Dict[str, Any]]:
+    points: List[Dict[str, Any]] = []
+    current = pack.get("current_candidate")
+    trusted = pack.get("trusted_candidate")
+
+    if current:
+        points.append(
+            {
+                "check": "최신성 신호",
+                "result": f"`{current.get('title')}` 가 현재 후보로 가장 최근에 가깝습니다.",
+                "status": "supports",
+            }
+        )
+    if trusted:
+        status = "supports" if trusted.get("page_id") == (current or {}).get("page_id") else "mixed"
+        points.append(
+            {
+                "check": "신뢰/배경 신호",
+                "result": f"`{trusted.get('title')}` 가 신뢰 또는 배경 문맥을 제공합니다.",
+                "status": status,
+            }
+        )
+    if pack.get("conflict_notes"):
+        points.append(
+            {
+                "check": "충돌 신호",
+                "result": pack.get("conflict_notes", [])[0],
+                "status": "contradicts",
+            }
+        )
+    if pack.get("missing_signals"):
+        points.append(
+            {
+                "check": "근거 공백",
+                "result": pack.get("missing_signals", [])[0],
+                "status": "mixed",
+            }
+        )
+    if pack.get("recent_changes"):
+        points.append(
+            {
+                "check": "변경 흐름",
+                "result": (pack.get("recent_changes", [])[0].get("summary") or "").strip() or "최근 변경이 감지되었습니다.",
+                "status": "supports",
+            }
+        )
+    return points[:4]
+
+
+def derive_hypothesis_status(pack: Dict[str, Any]) -> str:
+    if pack.get("conflict_notes"):
+        return "mixed"
+    if pack.get("missing_signals") and not pack.get("current_candidate"):
+        return "rejected"
+    if pack.get("missing_signals"):
+        return "mixed"
+    if pack.get("current_candidate"):
+        return "supported"
+    return "rejected"
+
+
+def derive_pivot_question(pack: Dict[str, Any], hypothesis_status: str) -> Optional[str]:
+    if hypothesis_status == "supported":
+        return None
+    maintainers = pack.get("maintainer_signals", [])
+    if maintainers:
+        return f"`{maintainers[0].get('display_name')}` 에게 현재 기준 문서와 오래된 참고 문서의 역할 분리를 확인해야 합니다."
+    if pack.get("conflict_notes"):
+        return "겹치는 문서 중 어떤 문서를 실제 운영 기준으로 사용할지 팀 합의가 필요합니다."
+    return "현재 문서를 기준 정보로 보기 전에 최신 본문 근거와 소유자 신호를 보강해야 합니다."
+
+
+def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
@@ -93,7 +233,6 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
             return f"이 주제의 문서는 `{stale.get('title')}` 가 있지만 오래되어, 최신 상황은 담당자에게 직접 확인하는 것이 좋습니다."
         return "이 주제는 시작점으로 삼을 만한 문서가 아직 충분하지 않습니다."
 
-    # general (기존 로직)
     if current and trusted and current.get("page_id") == trusted.get("page_id"):
         return f"이 주제의 현재 작업 기준 문서로는 `{current.get('title')}` 를 우선 참고하는 것이 적절합니다."
     if current and trusted:
@@ -105,6 +244,21 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
     if stale:
         return f"`{stale.get('title')}` 중심의 오래된 근거만 있어, 재사용 전에 추가 검증이 필요합니다."
     return "이 주제는 신뢰할 만한 작업 기준 문서를 고를 만큼 근거가 충분하지 않습니다."
+
+
+def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", analysis_method: str = "evidence-first") -> str:
+    if analysis_method == "pyramid":
+        return derive_evidence_first_conclusion(pack, purpose)
+    if analysis_method == "hypothesis-driven":
+        hypothesis_status = derive_hypothesis_status(pack)
+        hypothesis = derive_hypothesis(pack, purpose)
+        if hypothesis_status == "supported":
+            return f"가설이 대체로 지지됩니다: {hypothesis}"
+        if hypothesis_status == "mixed":
+            return f"가설은 부분적으로만 지지됩니다: {hypothesis}"
+        return f"가설을 그대로 채택하기 어렵습니다: {hypothesis}"
+
+    return derive_evidence_first_conclusion(pack, purpose)
 
 
 def derive_change_summary(pack: Dict[str, Any]) -> List[str]:
@@ -202,13 +356,28 @@ def calibrate_confidence(pack: Dict[str, Any]) -> str:
     return "low"
 
 
-def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, purpose: str = "general") -> Dict[str, Any]:
-    conclusion = derive_conclusion(pack, purpose)
+def synthesize_topic(
+    pack: Dict[str, Any],
+    max_actions: int,
+    max_snippets: int,
+    purpose: str = "general",
+    analysis_method: str = "evidence-first",
+) -> Dict[str, Any]:
+    current = pack.get("current_candidate")
+    trusted = pack.get("trusted_candidate")
+    stale = pack.get("stale_candidate")
+    key_supports = derive_key_supports(pack) if analysis_method == "pyramid" else []
+    wider_significance = derive_wider_significance(pack, purpose) if analysis_method == "pyramid" else None
+    working_hypothesis = derive_hypothesis(pack, purpose) if analysis_method == "hypothesis-driven" else None
+    validation_points = derive_validation_points(pack) if analysis_method == "hypothesis-driven" else []
+    hypothesis_status = derive_hypothesis_status(pack) if analysis_method == "hypothesis-driven" else None
+    pivot_question = derive_pivot_question(pack, hypothesis_status) if analysis_method == "hypothesis-driven" else None
+    conclusion = derive_conclusion(pack, purpose, analysis_method)
     confidence = calibrate_confidence(pack)
     evidence_page_ids = sorted(
         {
             item.get("page_id")
-            for item in [pack.get("current_candidate"), pack.get("trusted_candidate"), pack.get("stale_candidate")]
+            for item in [current, trusted, stale]
             if item and item.get("page_id")
         }
     )
@@ -221,12 +390,20 @@ def synthesize_topic(pack: Dict[str, Any], max_actions: int, max_snippets: int, 
     return {
         "topic_id": pack.get("topic_id"),
         "label": pack.get("label"),
+        "analysis_method": analysis_method,
         "conclusion": conclusion,
+        "executive_answer": conclusion if analysis_method == "pyramid" else None,
+        "key_supports": key_supports,
+        "wider_significance": wider_significance,
+        "working_hypothesis": working_hypothesis,
+        "validation_points": validation_points,
+        "hypothesis_status": hypothesis_status,
+        "pivot_question": pivot_question,
         "confidence": confidence,
         "confidence_ko": CONFIDENCE_KO.get(confidence, "알 수 없음"),
-        "current_reference": summarize_candidate(pack.get("current_candidate")),
-        "background_reference": summarize_candidate(pack.get("trusted_candidate")),
-        "stale_reference": summarize_candidate(pack.get("stale_candidate")),
+        "current_reference": summarize_candidate(current),
+        "background_reference": summarize_candidate(trusted),
+        "stale_reference": summarize_candidate(stale),
         "recent_change_summary": derive_change_summary(pack) if purpose != "change-tracking" else [
             (change.get("summary") or "").strip()
             for change in pack.get("recent_changes", [])[:10]
@@ -269,7 +446,7 @@ def main() -> int:
             continue
         pack = read_json(pack_path)
         max_snippets = args.max_snippets if args.purpose != "onboarding" else max(args.max_snippets, 5)
-        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose))
+        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose, args.analysis_method))
 
     insights.sort(
         key=lambda item: (
@@ -285,6 +462,7 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "synthesize_insights",
             "purpose": args.purpose,
+            "analysis_method": args.analysis_method,
             "manifest": args.manifest,
             "topic_count": len(insights),
         },

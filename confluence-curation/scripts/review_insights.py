@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
 VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
 SEVERITY_KO = {"pass": "통과", "warn": "주의", "fail": "실패"}
+ANALYSIS_METHODS = ["evidence-first", "pyramid", "hypothesis-driven"]
 REVIEWER_KO = {
     "freshness": "최신성 검토",
     "trust": "신뢰도 검토",
@@ -28,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="insights.json from synthesize_insights.py")
     parser.add_argument("--output", required=True)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--analysis-method", default="evidence-first", choices=ANALYSIS_METHODS)
     return parser.parse_args()
 
 
@@ -108,7 +110,7 @@ def trust_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
+def contradiction_review(insight: Dict[str, Any], analysis_method: str = "evidence-first") -> Dict[str, Any]:
     findings: List[str] = []
     severity = "pass"
     conflicts = insight.get("conflict_notes", [])
@@ -122,6 +124,9 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
         if current.get("page_id") != background.get("page_id") and not conflicts:
             findings.append("현재 기준 문서와 배경 참고 문서가 다르지만 충돌 메모가 명시되지 않았습니다.")
             severity = "warn"
+    if analysis_method == "hypothesis-driven" and insight.get("hypothesis_status") == "supported" and conflicts:
+        findings.append("반증 또는 충돌 근거가 있는데 가설 상태가 supported 로 유지되어 있습니다.")
+        severity = "fail"
 
     if not findings:
         findings.append("해결되지 않은 충돌 신호는 뚜렷하지 않습니다.")
@@ -135,7 +140,7 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
+def executive_review(insight: Dict[str, Any], analysis_method: str = "evidence-first") -> Dict[str, Any]:
     findings: List[str] = []
     severity = "pass"
 
@@ -148,6 +153,34 @@ def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     if not insight.get("conclusion"):
         findings.append("인사이트에 명시적인 결론이 없습니다.")
         severity = "fail"
+    if analysis_method == "pyramid":
+        key_supports = insight.get("key_supports", [])
+        if not insight.get("executive_answer"):
+            findings.append("피라미드 방식인데 답을 먼저 제시하는 executive_answer 가 없습니다.")
+            severity = "fail"
+        if len(key_supports) > 3:
+            findings.append("피라미드 방식의 핵심 근거가 4개 이상으로 과도합니다.")
+            severity = "fail"
+        if len(key_supports) != len(set(key_supports)):
+            findings.append("피라미드 방식의 핵심 근거가 중복됩니다.")
+            severity = "fail"
+        wider_significance = insight.get("wider_significance")
+        if not wider_significance:
+            findings.append("피라미드 방식인데 wider_significance 가 없습니다.")
+            severity = "fail"
+        elif wider_significance == insight.get("executive_answer"):
+            findings.append("wider_significance 가 결론의 재서술에 머물러 있습니다.")
+            severity = "warn"
+    elif analysis_method == "hypothesis-driven":
+        if not insight.get("working_hypothesis"):
+            findings.append("가설 기반 방식인데 working_hypothesis 가 없습니다.")
+            severity = "fail"
+        if not insight.get("validation_points"):
+            findings.append("가설 기반 방식인데 validation_points 가 없습니다.")
+            severity = "fail"
+        if not insight.get("hypothesis_status"):
+            findings.append("가설 기반 방식인데 hypothesis_status 가 없습니다.")
+            severity = "fail"
 
     if not findings:
         findings.append("인사이트가 간결하고 실행 지향적으로 정리되어 있습니다.")
@@ -193,12 +226,12 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
     return "low"
 
 
-def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str, Any]:
+def review_topic(insight: Dict[str, Any], purpose: str = "general", analysis_method: str = "evidence-first") -> Dict[str, Any]:
     reviews = [
         freshness_review(insight),
         trust_review(insight),
-        contradiction_review(insight),
-        executive_review(insight),
+        contradiction_review(insight, analysis_method),
+        executive_review(insight, analysis_method),
     ]
 
     # Purpose-specific reviewer weighting: duplicate the dominant reviewer
@@ -206,7 +239,7 @@ def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str,
     if purpose == "change-tracking":
         reviews.append(freshness_review(insight))
     elif purpose == "onboarding":
-        reviews.append(executive_review(insight))
+        reviews.append(executive_review(insight, analysis_method))
 
     verdict = combine_reviews(reviews)
     adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews)
@@ -215,6 +248,7 @@ def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str,
     return {
         "topic_id": insight.get("topic_id"),
         "label": insight.get("label"),
+        "analysis_method": analysis_method,
         "original_confidence": insight.get("confidence"),
         "original_confidence_ko": CONFIDENCE_KO.get(insight.get("confidence"), "알 수 없음"),
         "adjusted_confidence": adjusted_confidence,
@@ -242,7 +276,10 @@ def main() -> int:
     payload = read_json(args.input)
     insights = payload.get("insights", [])
 
-    reviewed = [review_topic(insight, args.purpose) for insight in insights]
+    reviewed = [
+        review_topic(insight, args.purpose, insight.get("analysis_method") or args.analysis_method)
+        for insight in insights
+    ]
     reviewed.sort(
         key=lambda item: (
             item.get("verdict") == "approved",
@@ -256,6 +293,7 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "review_insights",
             "purpose": args.purpose,
+            "analysis_method": args.analysis_method,
             "input": args.input,
             "topic_count": len(reviewed),
         },

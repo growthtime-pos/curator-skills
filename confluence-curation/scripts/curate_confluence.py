@@ -25,6 +25,11 @@ STATUS_KO = {
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
 VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+ANALYSIS_METHOD_LABELS = {
+    "evidence-first": "evidence-first",
+    "pyramid": "pyramid",
+    "hypothesis-driven": "hypothesis-driven",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--emit-json-summary")
     parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--analysis-method", default="evidence-first", choices=list(ANALYSIS_METHOD_LABELS))
     return parser.parse_args()
 
 
@@ -480,7 +486,9 @@ def build_topic_insight_lines(
 
     for insight in insights[:10]:
         review = review_lookup.get(insight.get("topic_id"), {})
+        analysis_method = insight.get("analysis_method") or (insights_payload.get("meta") or {}).get("analysis_method") or "evidence-first"
         lines.append(f"### {insight.get('label') or insight.get('topic_id')}")
+        lines.append(f"- 분석 방식: {ANALYSIS_METHOD_LABELS.get(analysis_method, analysis_method)}")
         lines.append(f"- 결론: {insight.get('conclusion')}")
         insight_confidence = insight.get("confidence_ko") or CONFIDENCE_KO.get(insight.get("confidence", ""), "알 수 없음")
         review_confidence = review.get("adjusted_confidence_ko") or CONFIDENCE_KO.get(review.get("adjusted_confidence", ""), "알 수 없음")
@@ -498,7 +506,28 @@ def build_topic_insight_lines(
         background = insight.get("background_reference") or {}
         stale = insight.get("stale_reference") or {}
 
-        if purpose == "change-tracking":
+        if analysis_method == "pyramid":
+            for support in (insight.get("key_supports") or [])[:3]:
+                lines.append(f"- 핵심 근거: {support}")
+            if insight.get("wider_significance"):
+                lines.append(f"- 의미: {insight.get('wider_significance')}")
+            for action in (insight.get("suggested_actions") or [])[:2]:
+                lines.append(f"- 권장 후속 조치: {action}")
+
+        elif analysis_method == "hypothesis-driven":
+            if insight.get("working_hypothesis"):
+                lines.append(f"- 가설: {insight.get('working_hypothesis')}")
+            for point in (insight.get("validation_points") or [])[:3]:
+                status = point.get("status") or "unknown"
+                lines.append(f"- 검증({status}): {point.get('check')}: {point.get('result')}")
+            if insight.get("hypothesis_status"):
+                lines.append(f"- 가설 판정: {insight.get('hypothesis_status')}")
+            if insight.get("pivot_question"):
+                lines.append(f"- 추가 확인 질문: {insight.get('pivot_question')}")
+            for action in (insight.get("suggested_actions") or [])[:2]:
+                lines.append(f"- 다음 검증 행동: {action}")
+
+        elif purpose == "change-tracking":
             # 변경 추적: 변경 내역 확장, 충돌 축소
             for change in (insight.get("recent_change_summary") or [])[:8]:
                 lines.append(f"- 변경: {change}")
@@ -1086,8 +1115,13 @@ def main() -> int:
         handle.write(markdown)
 
     if args.emit_json_summary:
+        analysis_method = (
+            ((insights_payload or {}).get("meta") or {}).get("analysis_method")
+            or args.analysis_method
+        )
         summary_payload = {
             "purpose": args.purpose,
+            "analysis_method": analysis_method,
             "summary": {
                 "best_current_candidate_page_id": max(scored_pages, key=lambda item: item["freshness_score"], default={}).get("page_id"),
                 "best_trust_candidate_page_id": max(scored_pages, key=lambda item: item["trust_score"], default={}).get("page_id"),

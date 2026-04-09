@@ -9,6 +9,14 @@ description: Fetch Confluence pages and edit history, then curate which document
 
 Use this skill to turn a messy set of Confluence pages into a readable curation and insight view.
 
+The current staged pipeline maps naturally to split skills:
+- `pre-analysis`: scope, purpose, and run setup
+- `extract`: fetch and merge raw Confluence data
+- `cluster`: normalize, cluster, and assemble evidence packs
+- `analyze`: derive topic-level judgments from evidence packs
+- `synthesize`: render human-facing report structure
+- `validate`: challenge overconfident or weakly supported judgments
+
 When the user wants preferred spaces to be weighted more heavily, delegate the expansion step to the sibling skill at `extensions/preferred-space-expansion/` and then merge its JSON artifact into the final curation flow.
 
 The goal is not to declare one document as absolute truth.
@@ -77,12 +85,13 @@ python3 confluence-curation/scripts/configure_confluence.py clear
 8. If the user has preferred spaces, run `extensions/preferred-space-expansion/scripts/expand_preferred_space.py` to fetch related pages from those spaces and produce an optional expansion artifact.
 9. **Keyword expansion (mandatory):** Analyze the fetch results and derive expansion keywords following the procedure in the "Keyword Expansion" section below. Present candidates to the user for approval, then run a second fetch with approved keywords and merge results using `scripts/merge_fetched.py`.
 10. Read [references/scoring.md](references/scoring.md) if you need to tune trust or freshness interpretation.
-11. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
-12. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
-13. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
-14. Run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact when present. Pass the purpose determined in step 6.
-15. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
-16. Call out ambiguity explicitly instead of hiding it.
+11. Determine the analysis method for the `analyze` stage. Default to `evidence-first`. Use `pyramid` for answer-first executive summaries and `hypothesis-driven` for cause-checking or competing explanation work. See [references/analysis-methods.md](references/analysis-methods.md).
+12. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
+13. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
+14. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
+15. Run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact when present. Pass the purpose determined in step 6.
+16. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
+17. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -91,16 +100,17 @@ When the user wants more than page ranking, use a staged workflow inspired by ar
 1. Fetch raw Confluence data.
 2. **Keyword expansion (mandatory):** Follow the procedure in the "Keyword Expansion" section below, then merge results.
 3. Determine the curation purpose (same as Default Workflow step 6).
-4. Normalize the merged data.
-5. Cluster related pages into topic groups.
-6. Build evidence packs for each topic:
+4. Determine the analysis method for the `analyze` stage. Default to `evidence-first`; use `pyramid` or `hypothesis-driven` only when the user's output need clearly matches those modes.
+5. Normalize the merged data.
+6. Cluster related pages into topic groups.
+7. Build evidence packs for each topic:
    - current candidate page
    - trusted background page
    - conflicting claims or duplicate pages
    - recent changes and likely maintainers
-7. Synthesize topic-level insights with explicit evidence: `scripts/synthesize_insights.py --purpose {purpose}`
-8. Run a second-pass review over freshness, trust, contradiction, and actionability: `scripts/review_insights.py --purpose {purpose}`
-9. Produce a final Korean report with confidence and open questions: `scripts/curate_confluence.py --purpose {purpose}`
+8. Analyze topic-level evidence with explicit method selection: `scripts/synthesize_insights.py --purpose {purpose} --analysis-method {analysis_method}`
+9. Run a second-pass validation over freshness, trust, contradiction, and actionability: `scripts/review_insights.py --purpose {purpose} --analysis-method {analysis_method}`
+10. Produce a final Korean report with confidence and open questions: `scripts/curate_confluence.py --purpose {purpose} --analysis-method {analysis_method}`
 
 Prefer saving intermediate artifacts instead of hiding all reasoning inside one final summary.
 
@@ -154,6 +164,14 @@ When the user asks for deeper insight analysis, also produce:
 - evidence-backed conflict notes
 - likely owner or maintainer signals
 - suggested next actions for cleanup, migration, or verification
+
+## Analyze Methods
+
+- `evidence-first`: 기본값. 현재 기준 문서, 배경 문서, 충돌, 공백을 보수적으로 정리합니다.
+- `pyramid`: 결론을 먼저 내고 핵심 근거 3개 이내와 wider significance 를 제시합니다.
+- `hypothesis-driven`: 작업 가설을 먼저 세우고 검증/반증 포인트와 pivot question 을 남깁니다.
+
+MECE, Issue Tree, SCQA, So What/Why So 는 독립 CLI 옵션이 아니라 위 방법론 내부의 품질 규칙으로 적용합니다.
 
 ## Keyword Expansion (Mandatory Step)
 
@@ -226,6 +244,8 @@ python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-m
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --expansion-input data/confluence-ai-expanded.json --output data/confluence.md`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose change-tracking`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose onboarding`
+- `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json --purpose general --analysis-method pyramid`
+- `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json --purpose general --analysis-method hypothesis-driven`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
@@ -246,12 +266,12 @@ Use the staged pipeline when you want topic-level insight instead of only page r
    - `python3 confluence-curation/scripts/cluster_confluence.py --input data/normalized.json --output data/clusters.json`
 5. Build evidence packs:
    - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input data/normalized.json --clusters-input data/clusters.json --output-dir data/evidence --emit-manifest data/evidence-manifest.json`
-6. Synthesize topic insights (replace `{purpose}` with `general`, `change-tracking`, or `onboarding`):
-   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json --purpose {purpose}`
-7. Run the second-pass review:
-   - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json --purpose {purpose}`
+6. Analyze topic insights (replace `{purpose}` with `general`, `change-tracking`, or `onboarding`; replace `{analysis_method}` with `evidence-first`, `pyramid`, or `hypothesis-driven`):
+   - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json --purpose {purpose} --analysis-method {analysis_method}`
+7. Run the second-pass validation:
+   - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json --purpose {purpose} --analysis-method {analysis_method}`
 8. Render the final Markdown report:
-   - `python3 confluence-curation/scripts/curate_confluence.py --input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --output data/confluence-report.md --emit-json-summary data/confluence-summary.json --purpose {purpose}`
+   - `python3 confluence-curation/scripts/curate_confluence.py --input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --output data/confluence-report.md --emit-json-summary data/confluence-summary.json --purpose {purpose} --analysis-method {analysis_method}`
 9. Run the fixture-based smoke test when changing the staged pipeline:
    - `python3 confluence-curation/scripts/smoke_pipeline.py`
 

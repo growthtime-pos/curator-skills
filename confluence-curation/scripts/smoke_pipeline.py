@@ -103,6 +103,8 @@ def assert_artifact_shapes(workdir: Path) -> None:
     first_insight = insights["insights"][0]
     if "confidence_ko" not in first_insight:
         raise RuntimeError("인사이트 결과에 한글 확신도 필드가 없습니다.")
+    if "analysis_method" not in first_insight:
+        raise RuntimeError("인사이트 결과에 analysis_method 필드가 없습니다.")
 
     first_review = review["reviews"][0]
     if "verdict_ko" not in first_review:
@@ -213,6 +215,56 @@ def main() -> int:
     assert_feature_artifacts(workdir)
     assert_report_contents(workdir / "report.md", "general")
 
+    for method in ["pyramid", "hypothesis-driven"]:
+        method_insights = workdir / f"insights-{method}.json"
+        method_review = workdir / f"review-{method}.json"
+        method_report = workdir / f"report-{method}.md"
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/synthesize_insights.py",
+                "--manifest",
+                str(workdir / "evidence-manifest.json"),
+                "--output",
+                str(method_insights),
+                "--analysis-method",
+                method,
+            ],
+            root,
+        )
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/review_insights.py",
+                "--input",
+                str(method_insights),
+                "--output",
+                str(method_review),
+                "--analysis-method",
+                method,
+            ],
+            root,
+        )
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/curate_confluence.py",
+                "--input",
+                str(workdir / "merged.json"),
+                "--insights-input",
+                str(method_insights),
+                "--review-input",
+                str(method_review),
+                "--output",
+                str(method_report),
+                "--analysis-method",
+                method,
+            ],
+            root,
+        )
+        assert_file_exists(method_report)
+        assert_report_contents(method_report, "general")
+
     # -- purpose-specific report tests --
     for purpose in ["change-tracking", "onboarding"]:
         purpose_report = workdir / f"report-{purpose}.md"
@@ -247,7 +299,7 @@ def main() -> int:
     if not args.keep_artifacts:
         shutil.rmtree(workdir)
 
-    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 (general + change-tracking + onboarding).")
+    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 (general 3 methods + change-tracking + onboarding).")
     return 0
 
 

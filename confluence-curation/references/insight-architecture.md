@@ -7,6 +7,8 @@ This document describes how to evolve Confluence curation into a staged insight-
 The design goal is not just to rank pages.
 It is to produce topic-level understanding with evidence, uncertainty, and follow-up actions.
 
+For split-skill adoption, treat the current `synthesize` stage below as the logical `analyze` stage that emits method-aware judgments before final human-facing synthesis.
+
 The architecture is inspired by artifact-first workflow systems such as `gstack`.
 The main idea to borrow is staged analysis with explicit intermediate outputs.
 
@@ -25,8 +27,8 @@ The main idea to borrow is staged analysis with explicit intermediate outputs.
 2. normalize
 3. cluster
 4. evidence-pack
-5. synthesize
-6. review
+5. analyze
+6. validate
 7. report
 
 Each stage should read a stable input artifact and write a stable output artifact.
@@ -103,7 +105,7 @@ Include:
 Primary output:
 - `evidence/topic_<id>.json`
 
-## 5. Synthesize
+## 5. Analyze
 
 Generate topic-level insights, not just page rankings.
 
@@ -120,6 +122,7 @@ Primary output:
 
 Each insight should carry:
 - topic ID
+- analysis method
 - conclusion
 - confidence
 - evidence page IDs
@@ -127,7 +130,11 @@ Each insight should carry:
 - warnings
 - suggested actions
 
-### 6. Review
+Method-specific additions may include:
+- `executive_answer`, `key_supports`, `wider_significance`
+- `working_hypothesis`, `validation_points`, `hypothesis_status`, `pivot_question`
+
+### 6. Validate
 
 Run one or more second-pass reviewers over synthesized insights.
 
