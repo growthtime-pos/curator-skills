@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +66,8 @@ def assert_report_contents(report_path: Path, purpose: str = "general") -> None:
         ]
     else:
         required_fragments = [
+            "## 지금 주목해야 할 주제",
+            "## 우선 읽을 문서",
             "## 주제별 인사이트",
             "결론:",
             "확신도:",
@@ -73,6 +75,8 @@ def assert_report_contents(report_path: Path, purpose: str = "general") -> None:
     for fragment in required_fragments:
         if fragment not in text:
             raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다 (purpose={purpose}): {fragment}")
+    if purpose == "general" and ("권장 후속 조치:" not in text and "다음 검증 행동:" not in text):
+        raise RuntimeError("최종 리포트에 필요한 후속 action 문구가 없습니다 (general).")
 
 
 def assert_merge_shape(workdir: Path) -> None:
@@ -92,6 +96,8 @@ def assert_artifact_shapes(workdir: Path) -> None:
     clusters = read_json(workdir / "clusters.json")
     insights = read_json(workdir / "insights.json")
     review = read_json(workdir / "review.json")
+    brief = read_json(workdir / "brief.json")
+    followup = read_json(workdir / "followup-action.json")
 
     if clusters.get("summary", {}).get("multi_page_cluster_count", 0) < 1:
         raise RuntimeError("다중 페이지 클러스터가 생성되지 않았습니다.")
@@ -103,10 +109,16 @@ def assert_artifact_shapes(workdir: Path) -> None:
     first_insight = insights["insights"][0]
     if "confidence_ko" not in first_insight:
         raise RuntimeError("인사이트 결과에 한글 확신도 필드가 없습니다.")
+    if "reasoning_method" not in first_insight:
+        raise RuntimeError("인사이트 결과에 reasoning_method 필드가 없습니다.")
 
     first_review = review["reviews"][0]
     if "verdict_ko" not in first_review:
         raise RuntimeError("리뷰 결과에 한글 verdict 필드가 없습니다.")
+    if not brief.get("attention_topics"):
+        raise RuntimeError("브리핑 결과에 attention_topics 가 없습니다.")
+    if not followup.get("best_explanation_ko"):
+        raise RuntimeError("후속 질문 결과에 설명이 없습니다.")
 
 
 def assert_feature_artifacts(workdir: Path) -> None:
@@ -118,11 +130,139 @@ def assert_feature_artifacts(workdir: Path) -> None:
         assert_file_exists(path)
 
 
+def assert_legacy_report_contents(report_path: Path) -> None:
+    text = report_path.read_text(encoding="utf-8")
+    for fragment in [
+        "## 요약",
+        "## 우선 읽을 문서",
+        "## 문서 현황",
+        "## 추천 결론",
+    ]:
+        if fragment not in text:
+            raise RuntimeError(f"legacy report 에 필요한 문구가 없습니다: {fragment}")
+
+
+def assert_orchestrator_outputs(workdir: Path, expected_cluster: str, expected_synthesize: str, expected_validate: str) -> None:
+    pipeline_plan = read_json(workdir / "pipeline_plan.json")
+    pipeline_result = read_json(workdir / "pipeline_result.json")
+    selected = pipeline_plan.get("selected_methods", {})
+
+    if selected.get("stage2_cluster") != expected_cluster:
+        raise RuntimeError(f"orchestrator cluster method mismatch: {selected.get('stage2_cluster')} != {expected_cluster}")
+    if selected.get("stage4_synthesize") != expected_synthesize:
+        raise RuntimeError(
+            f"orchestrator synthesize method mismatch: {selected.get('stage4_synthesize')} != {expected_synthesize}"
+        )
+    if selected.get("stage5_validate") != expected_validate:
+        raise RuntimeError(
+            f"orchestrator validate method mismatch: {selected.get('stage5_validate')} != {expected_validate}"
+        )
+
+    for name in [
+        "pipeline_plan.json",
+        "pipeline_result.json",
+        "preferred-spaces.json",
+        "merged-expanded.json",
+        "normalized.json",
+        "clusters.json",
+        "evidence-manifest.json",
+        "insights.json",
+        "review.json",
+        "report.md",
+        "summary.json",
+        "brief.json",
+        "brief.md",
+    ]:
+        assert_file_exists(workdir / name)
+
+    if not pipeline_result.get("artifacts", {}).get("report"):
+        raise RuntimeError("pipeline_result.json 에 report artifact가 없습니다.")
+    assert_report_contents(workdir / "report.md")
+
+
+def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Dict[str, Any]) -> Dict[str, Any]:
+    pages = list(payload.get("pages", []))
+    people = list(payload.get("people", []))
+    relationships = list(payload.get("relationships", []))
+    warnings = list(payload.get("warnings", []))
+    preferred_spaces = expansion_payload.get("preferred_spaces", [])
+
+    page_ids = {page.get("page_id") for page in pages}
+    person_ids = {person.get("account_id") for person in people if person}
+    relationship_keys = {
+        (rel.get("from_page_id"), rel.get("to_page_id"), rel.get("type"))
+        for rel in relationships
+    }
+
+    for page in pages:
+        page.setdefault("discovery_source", "query_seed")
+        page.setdefault("discovery_reasons", ["키워드 검색 시드"])
+        page.setdefault(
+            "preferred_space_match",
+            page.get("space_key") in preferred_spaces if preferred_spaces else False,
+        )
+        page.setdefault("preferred_space_boost", 8 if page.get("preferred_space_match") else 0)
+
+    for page in expansion_payload.get("expanded_pages", []):
+        page_id = page.get("page_id")
+        if not page_id or page_id in page_ids:
+            continue
+        expanded_page = dict(page)
+        expanded_page.setdefault("discovery_source", "preferred_space_expansion")
+        expanded_page.setdefault("preferred_space_match", True)
+        expanded_page.setdefault("preferred_space_boost", 8)
+        pages.append(expanded_page)
+        page_ids.add(page_id)
+
+    for person in expansion_payload.get("people", []):
+        account_id = person.get("account_id") if person else None
+        if account_id and account_id not in person_ids:
+            people.append(person)
+            person_ids.add(account_id)
+
+    for rel in expansion_payload.get("links", []):
+        key = (rel.get("from_page_id"), rel.get("to_page_id"), rel.get("type"))
+        if key not in relationship_keys:
+            relationships.append(rel)
+            relationship_keys.add(key)
+
+    for warning in expansion_payload.get("warnings", []):
+        if warning not in warnings:
+            warnings.append(warning)
+
+    merged = dict(payload)
+    merged["pages"] = pages
+    merged["people"] = people
+    merged["relationships"] = relationships
+    merged["warnings"] = warnings
+    merged_meta = dict(payload.get("meta", {}))
+    merged_meta["preferred_space_expansion"] = {
+        "used": True,
+        "artifact_schema_version": ((expansion_payload.get("meta") or {}).get("schema_version")),
+        "expanded_page_count": len(expansion_payload.get("expanded_pages", [])),
+    }
+    scope = dict(merged_meta.get("scope", {}))
+    scope["preferred_spaces"] = preferred_spaces
+    scope["expanded_page_ids"] = [
+        page.get("page_id")
+        for page in expansion_payload.get("expanded_pages", [])
+        if page.get("page_id")
+    ]
+    merged_meta["scope"] = scope
+    merged["meta"] = merged_meta
+    return merged
+
+
 def main() -> int:
     args = parse_args()
     root = repo_root()
     fixture = (root / args.fixture).resolve()
     workdir = (root / args.workdir).resolve()
+    orchestrated_default_dir = workdir / "orchestrated-default"
+    orchestrated_alt_dir = workdir / "orchestrated-alt"
+    expansion_fixture = (
+        root / "confluence-curation/fixtures/preferred_space_expanded_fixture.json"
+    ).resolve()
 
     if workdir.exists():
         shutil.rmtree(workdir)
@@ -146,7 +286,26 @@ def main() -> int:
     )
 
     run_step(
-        [python, "confluence-curation/scripts/normalize_confluence.py", "--input", str(workdir / "merged.json"), "--output", str(workdir / "normalized.json")],
+        [
+            python,
+            "confluence-curation/scripts/infer_preferred_spaces.py",
+            "--input",
+            str(workdir / "merged.json"),
+            "--output",
+            str(workdir / "preferred-spaces.json"),
+        ],
+        root,
+    )
+
+    merged_payload = read_json(workdir / "merged.json")
+    expansion_payload = read_json(expansion_fixture)
+    merged_with_expansion = merge_expansion_payload(merged_payload, expansion_payload)
+    with (workdir / "merged-expanded.json").open("w", encoding="utf-8") as handle:
+        json.dump(merged_with_expansion, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+    run_step(
+        [python, "confluence-curation/scripts/normalize_confluence.py", "--input", str(workdir / "merged-expanded.json"), "--output", str(workdir / "normalized.json")],
         root,
     )
     run_step(
@@ -181,7 +340,9 @@ def main() -> int:
             python,
             "confluence-curation/scripts/curate_confluence.py",
             "--input",
-            str(workdir / "merged.json"),
+            str(workdir / "merged-expanded.json"),
+            "--preferred-space-inference-input",
+            str(workdir / "preferred-spaces.json"),
             "--insights-input",
             str(workdir / "insights.json"),
             "--review-input",
@@ -195,9 +356,83 @@ def main() -> int:
         ],
         root,
     )
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/render_insight_brief.py",
+            "--fetch-input",
+            str(workdir / "merged-expanded.json"),
+            "--insights-input",
+            str(workdir / "insights.json"),
+            "--review-input",
+            str(workdir / "review.json"),
+            "--summary-input",
+            str(workdir / "summary.json"),
+            "--preferred-space-inference-input",
+            str(workdir / "preferred-spaces.json"),
+            "--output",
+            str(workdir / "brief.json"),
+            "--markdown-output",
+            str(workdir / "brief.md"),
+        ],
+        root,
+    )
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/answer_followup.py",
+            "--insights-input",
+            str(workdir / "insights.json"),
+            "--review-input",
+            str(workdir / "review.json"),
+            "--normalized-input",
+            str(workdir / "normalized.json"),
+            "--question",
+            "최근 뭐가 바뀌었나",
+            "--output",
+            str(workdir / "followup-change.json"),
+        ],
+        root,
+    )
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/answer_followup.py",
+            "--insights-input",
+            str(workdir / "insights.json"),
+            "--review-input",
+            str(workdir / "review.json"),
+            "--normalized-input",
+            str(workdir / "normalized.json"),
+            "--question",
+            "이 표현은 무슨 뜻인가",
+            "--output",
+            str(workdir / "followup-meaning.json"),
+        ],
+        root,
+    )
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/answer_followup.py",
+            "--insights-input",
+            str(workdir / "insights.json"),
+            "--review-input",
+            str(workdir / "review.json"),
+            "--normalized-input",
+            str(workdir / "normalized.json"),
+            "--question",
+            "그래서 내가 뭘 해야 하나",
+            "--output",
+            str(workdir / "followup-action.json"),
+        ],
+        root,
+    )
 
     for name in [
         "merged.json",
+        "merged-expanded.json",
+        "preferred-spaces.json",
         "normalized.json",
         "clusters.json",
         "evidence-manifest.json",
@@ -205,6 +440,11 @@ def main() -> int:
         "review.json",
         "report.md",
         "summary.json",
+        "brief.json",
+        "brief.md",
+        "followup-change.json",
+        "followup-meaning.json",
+        "followup-action.json",
     ]:
         assert_file_exists(workdir / name)
 
@@ -212,6 +452,67 @@ def main() -> int:
     assert_artifact_shapes(workdir)
     assert_feature_artifacts(workdir)
     assert_report_contents(workdir / "report.md", "general")
+
+    for strategy in ["pyramid-synthesis", "hypothesis-driven-synthesis"]:
+        strategy_insights = workdir / f"insights-{strategy}.json"
+        strategy_review = workdir / f"review-{strategy}.json"
+        strategy_report = workdir / f"report-{strategy}.md"
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/synthesize_insights.py",
+                "--manifest",
+                str(workdir / "evidence-manifest.json"),
+                "--output",
+                str(strategy_insights),
+                "--strategy",
+                strategy,
+            ],
+            root,
+        )
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/review_insights.py",
+                "--input",
+                str(strategy_insights),
+                "--output",
+                str(strategy_review),
+            ],
+            root,
+        )
+        run_step(
+            [
+                python,
+                "confluence-curation/scripts/curate_confluence.py",
+                "--input",
+                str(workdir / "merged-expanded.json"),
+                "--insights-input",
+                str(strategy_insights),
+                "--review-input",
+                str(strategy_review),
+                "--output",
+                str(strategy_report),
+            ],
+            root,
+        )
+        assert_file_exists(strategy_report)
+        assert_report_contents(strategy_report, "general")
+
+    # -- legacy compatibility check --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/curate_confluence.py",
+            "--input",
+            str(fixture),
+            "--output",
+            str(workdir / "legacy-report.md"),
+        ],
+        root,
+    )
+    assert_file_exists(workdir / "legacy-report.md")
+    assert_legacy_report_contents(workdir / "legacy-report.md")
 
     # -- purpose-specific report tests --
     for purpose in ["change-tracking", "onboarding"]:
@@ -235,6 +536,7 @@ def main() -> int:
         run_step(
             [python, "confluence-curation/scripts/curate_confluence.py",
              "--input", str(workdir / "merged.json"),
+             "--preferred-space-inference-input", str(workdir / "preferred-spaces.json"),
              "--insights-input", str(purpose_insights),
              "--review-input", str(purpose_review),
              "--output", str(purpose_report),
@@ -244,10 +546,69 @@ def main() -> int:
         assert_file_exists(purpose_report)
         assert_report_contents(purpose_report, purpose)
 
+    # -- orchestrator default methods --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/orchestrate_pipeline.py",
+            "--fetch-input",
+            str(fixture),
+            "--expansion-input",
+            str(expansion_fixture),
+            "--output-dir",
+            str(orchestrated_default_dir),
+            "--followup-question",
+            "최근 뭐가 바뀌었나",
+            "--followup-question",
+            "그래서 내가 뭘 해야 하나",
+            "--non-interactive",
+        ],
+        root,
+    )
+    assert_orchestrator_outputs(
+        orchestrated_default_dir,
+        "heuristic-cluster",
+        "balanced-synthesis",
+        "balanced-validator",
+    )
+
+    # -- orchestrator alternate method combination --
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/orchestrate_pipeline.py",
+            "--fetch-input",
+            str(fixture),
+            "--expansion-input",
+            str(expansion_fixture),
+            "--output-dir",
+            str(orchestrated_alt_dir),
+            "--cluster-method",
+            "keyword-heavy-cluster",
+            "--analyze-method",
+            "change-first-analysis",
+            "--synthesize-method",
+            "pyramid-synthesis",
+            "--validate-method",
+            "strict-validator",
+            "--non-interactive",
+        ],
+        root,
+    )
+    assert_orchestrator_outputs(
+        orchestrated_alt_dir,
+        "keyword-heavy-cluster",
+        "pyramid-synthesis",
+        "strict-validator",
+    )
+
     if not args.keep_artifacts:
         shutil.rmtree(workdir)
 
-    print("Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 (general + change-tracking + onboarding).")
+    print(
+        "Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 "
+        "(legacy + staged + consultant synth strategies + orchestrated default/alternate + change-tracking + onboarding)."
+    )
     return 0
 
 

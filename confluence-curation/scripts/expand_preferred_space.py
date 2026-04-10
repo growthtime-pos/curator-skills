@@ -39,7 +39,7 @@ STOP_WORDS = {
 
 
 def load_fetch_module() -> Any:
-    script_path = Path(__file__).resolve().parents[3] / "scripts" / "fetch_confluence.py"
+    script_path = Path(__file__).resolve().parent / "fetch_confluence.py"
     spec = importlib.util.spec_from_file_location("fetch_confluence_shared", script_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"fetch_confluence.py 를 불러올 수 없습니다: {script_path}")
@@ -53,7 +53,7 @@ FETCH = load_fetch_module()
 
 
 def load_data_store_module() -> Any:
-    script_path = Path(__file__).resolve().parents[3] / "scripts" / "data_store.py"
+    script_path = Path(__file__).resolve().parent / "data_store.py"
     spec = importlib.util.spec_from_file_location("confluence_data_store_shared", script_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"data_store.py 를 불러올 수 없습니다: {script_path}")
@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     config = FETCH.load_saved_config(config_path)
 
     parser = argparse.ArgumentParser(
-        description="기존 Confluence 검색 결과를 바탕으로 선호 스페이스 내부의 연관 문서를 확장 탐색합니다."
+        description="기존 Confluence 검색 결과를 바탕으로 내부 preferred space 의 연관 문서를 확장 탐색합니다."
     )
     parser.add_argument("--input", required=True, help="기존 fetch_confluence.py 출력 JSON 경로")
     parser.add_argument("--output", required=True)
@@ -109,7 +109,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=config_str(config, "password", "CONFLUENCE_PASSWORD"))
     parser.add_argument(
         "--cache-dir",
-        default=os.getenv("CONFLUENCE_CACHE_DIR") or config.get("cache_dir", os.path.expanduser("~/.confluence-curation-cache")),
+        default=os.getenv("CONFLUENCE_CACHE_DIR")
+        or config.get("cache_dir", os.path.expanduser("~/.confluence-curation-cache")),
     )
     parser.add_argument(
         "--data-dir",
@@ -264,7 +265,7 @@ def dedupe_pages(pages: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def build_fetch_args(args: argparse.Namespace, space_key: str, include_body: bool) -> argparse.Namespace:
-    namespace = argparse.Namespace(
+    return argparse.Namespace(
         base_url=args.base_url,
         deployment_type=args.deployment_type,
         email=args.email,
@@ -287,7 +288,6 @@ def build_fetch_args(args: argparse.Namespace, space_key: str, include_body: boo
         rate_limit_rps=args.rate_limit_rps,
         output=args.output,
     )
-    return namespace
 
 
 def fetch_space_pages(
@@ -328,7 +328,11 @@ def fetch_space_pages(
     return dedupe_pages(expanded_pages), people, links, warnings
 
 
-def merge_link_sets(seed_payload: Dict[str, Any], expansion_pages: List[Dict[str, Any]], expansion_links: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def merge_link_sets(
+    seed_payload: Dict[str, Any],
+    expansion_pages: List[Dict[str, Any]],
+    expansion_links: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     combined_pages = dedupe_pages(list(seed_payload.get("pages", [])) + expansion_pages)
     combined_links = FETCH.build_relationships(combined_pages)
     existing = {

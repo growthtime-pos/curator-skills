@@ -2,8 +2,8 @@
 
 ## Scope
 
-- This repository currently contains the main `confluence-curation/` skill package and the extension skill under `confluence-curation/extensions/preferred-space-expansion/`.
-- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/confluence_config.py`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/configure_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, `confluence-curation/scripts/synthesize_insights.py`, `confluence-curation/scripts/review_insights.py`, the preferred-space expansion files under `confluence-curation/extensions/preferred-space-expansion/`, and the planning references under `confluence-curation/references/` (including purpose-specific templates under `confluence-curation/references/purposes/`).
+- This repository currently contains the main `confluence-curation/` skill package.
+- Main authored files are `confluence-curation/SKILL.md`, `confluence-curation/agents/openai.yaml`, `confluence-curation/scripts/confluence_config.py`, `confluence-curation/scripts/fetch_confluence.py`, `confluence-curation/scripts/configure_confluence.py`, `confluence-curation/scripts/curate_confluence.py`, `confluence-curation/scripts/orchestrate_pipeline.py`, `confluence-curation/scripts/pipeline_registry.py`, `confluence-curation/scripts/synthesize_insights.py`, `confluence-curation/scripts/review_insights.py`, `confluence-curation/scripts/infer_preferred_spaces.py`, `confluence-curation/scripts/render_insight_brief.py`, `confluence-curation/scripts/answer_followup.py`, `confluence-curation/scripts/expand_preferred_space.py`, the stage registry under `confluence-curation/pipeline/`, the extension skills under `confluence-curation/extensions/`, and the planning references under `confluence-curation/references/` (including purpose-specific templates under `confluence-curation/references/purposes/`).
 - The Python code is stdlib-only; there is no `pyproject.toml`, `requirements.txt`, `package.json`, or Makefile on the current `main` branch.
 - There is no checked-in test suite yet, so validation is mostly smoke testing and syntax checking.
 
@@ -22,10 +22,17 @@
 - `confluence-curation/scripts/fetch_confluence.py` is the networked data collection CLI.
 - `confluence-curation/scripts/configure_confluence.py` is the local credential and connection config manager.
 - `confluence-curation/scripts/merge_fetched.py` merges and deduplicates multiple fetch result files.
+- `confluence-curation/scripts/orchestrate_pipeline.py` is the top-level stage-selectable pipeline runner that writes `pipeline_plan.json` and `pipeline_result.json`.
+- `confluence-curation/scripts/pipeline_registry.py` loads and validates the pipeline stage registry.
 - `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator; supports `--purpose` flag for purpose-specific output (`general`, `change-tracking`, `onboarding`).
-- `confluence-curation/scripts/synthesize_insights.py` generates topic-level insights from evidence packs; supports `--purpose` flag for purpose-specific conclusion framing and action generation.
-- `confluence-curation/scripts/review_insights.py` runs second-pass review over synthesized insights; supports `--purpose` flag for purpose-specific reviewer weighting.
-- `confluence-curation/extensions/preferred-space-expansion/` contains the preferred-space expansion skill, schema notes, and expansion CLI.
+- `confluence-curation/scripts/synthesize_insights.py` generates topic-level insights from evidence packs; supports both `--purpose` and `--strategy`.
+- `confluence-curation/scripts/review_insights.py` runs second-pass review over synthesized insights; supports both `--purpose` and `--strategy`.
+- `confluence-curation/scripts/infer_preferred_spaces.py` infers internal preferred-space candidates from first-pass search results.
+- `confluence-curation/scripts/render_insight_brief.py` renders briefing-style summaries from staged insight artifacts.
+- `confluence-curation/scripts/answer_followup.py` answers follow-up questions from saved insight artifacts.
+- `confluence-curation/scripts/expand_preferred_space.py` contains the preferred-space expansion CLI used internally by the main skill.
+- `confluence-curation/pipeline/stage_registry.json` is the source of truth for stage IDs, methods, and default method selection.
+- `confluence-curation/extensions/` contains stage-specific and master orchestration skill packages.
 - `confluence-curation/references/` contains prompt, bootstrap, scoring, architecture, and review references, not executable code.
 - `confluence-curation/references/purposes/` contains purpose-specific output template definitions (`_base.md`, `change-tracking.md`, `onboarding.md`).
 - `confluence-curation/references/purpose-registry.md` is the master index of available curation purposes, trigger phrases, and CLI flag mappings.
@@ -43,11 +50,11 @@
 - There is no formal build pipeline today.
 - Fast syntax build-equivalent for all scripts:
   ```bash
-  python3 -m py_compile confluence-curation/scripts/confluence_config.py confluence-curation/scripts/configure_confluence.py confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/merge_fetched.py confluence-curation/scripts/synthesize_insights.py confluence-curation/scripts/review_insights.py
+  python3 -m py_compile confluence-curation/scripts/confluence_config.py confluence-curation/scripts/configure_confluence.py confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/merge_fetched.py confluence-curation/scripts/orchestrate_pipeline.py confluence-curation/scripts/pipeline_registry.py confluence-curation/scripts/synthesize_insights.py confluence-curation/scripts/review_insights.py confluence-curation/scripts/infer_preferred_spaces.py confluence-curation/scripts/render_insight_brief.py confluence-curation/scripts/answer_followup.py
   ```
 - Syntax build-equivalent including the preferred-space expansion script:
   ```bash
-  python3 -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py
+  python3 -m py_compile confluence-curation/scripts/fetch_confluence.py confluence-curation/scripts/curate_confluence.py confluence-curation/scripts/expand_preferred_space.py
   ```
 - Whole-tree bytecode compilation:
   ```bash
@@ -68,13 +75,29 @@
   ```bash
   python3 confluence-curation/scripts/curate_confluence.py --help
   ```
+- CLI contract check for the orchestrator:
+  ```bash
+  python3 confluence-curation/scripts/orchestrate_pipeline.py --help
+  ```
+- CLI contract check for preferred-space inference:
+  ```bash
+  python3 confluence-curation/scripts/infer_preferred_spaces.py --help
+  ```
+- CLI contract check for the briefing renderer:
+  ```bash
+  python3 confluence-curation/scripts/render_insight_brief.py --help
+  ```
+- CLI contract check for follow-up answers:
+  ```bash
+  python3 confluence-curation/scripts/answer_followup.py --help
+  ```
 - CLI contract check for merge:
   ```bash
   python3 confluence-curation/scripts/merge_fetched.py --help
   ```
 - CLI contract check for the preferred-space expansion skill:
   ```bash
-  python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --help
+  python3 confluence-curation/scripts/expand_preferred_space.py --help
   ```
 
 ## Lint Commands
@@ -103,9 +126,25 @@
   ```bash
   python3 confluence-curation/scripts/curate_confluence.py --help
   ```
+- Smoke test orchestrator argument validation:
+  ```bash
+  python3 confluence-curation/scripts/orchestrate_pipeline.py --help
+  ```
+- Smoke test preferred-space inference argument validation:
+  ```bash
+  python3 confluence-curation/scripts/infer_preferred_spaces.py --help
+  ```
+- Smoke test briefing renderer argument validation:
+  ```bash
+  python3 confluence-curation/scripts/render_insight_brief.py --help
+  ```
+- Smoke test follow-up answer argument validation:
+  ```bash
+  python3 confluence-curation/scripts/answer_followup.py --help
+  ```
 - Smoke test preferred-space expansion argument validation:
   ```bash
-  python3 confluence-curation/extensions/preferred-space-expansion/scripts/expand_preferred_space.py --help
+  python3 confluence-curation/scripts/expand_preferred_space.py --help
   ```
 - Fixture-based staged pipeline smoke test:
   ```bash
@@ -131,9 +170,10 @@
   1. Run `configure_confluence.py status --json` and confirm the active config source/path and any missing fields.
   2. Run `fetch_confluence.py` with a small scope and `--output tmp/fetch.json`.
   3. For the legacy flow, run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
-  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py`, `extract_evidence.py`, `synthesize_insights.py --purpose {purpose}`, `review_insights.py --purpose {purpose}`, then `curate_confluence.py --insights-input ... --review-input ... --purpose {purpose}`. Valid purposes: `general` (default), `change-tracking`, `onboarding`.
-  5. Inspect the JSON and Markdown for schema and content regressions.
-  6. For a fast regression check, prefer `python3 confluence-curation/scripts/smoke_pipeline.py`.
+  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py --strategy {cluster_method}`, `extract_evidence.py --strategy {analyze_method}`, `synthesize_insights.py --purpose {purpose} --strategy {synthesize_method}`, `review_insights.py --purpose {purpose} --strategy {validate_method}`, then `curate_confluence.py --insights-input ... --review-input ... --purpose {purpose}`. Valid purposes: `general` (default), `change-tracking`, `onboarding`.
+  5. For the stage-selectable orchestrated flow, run `orchestrate_pipeline.py --fetch-input tmp/fetch.json --output-dir tmp/pipeline` and inspect `pipeline_plan.json`, `pipeline_result.json`, `report.md`, and `brief.json`.
+  6. Inspect the JSON and Markdown for schema and content regressions.
+  7. For a fast regression check, prefer `python3 confluence-curation/scripts/smoke_pipeline.py`.
 
 ## Running A Single Test
 

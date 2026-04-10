@@ -25,6 +25,11 @@ STATUS_KO = {
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
 VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+REASONING_METHOD_LABELS = {
+    "evidence-first": "evidence-first",
+    "pyramid": "pyramid",
+    "hypothesis-driven": "hypothesis-driven",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--expansion-input")
+    parser.add_argument("--preferred-space-inference-input")
     parser.add_argument("--insights-input")
     parser.add_argument("--review-input")
     parser.add_argument("--top-n", type=int, default=20)
@@ -480,7 +486,13 @@ def build_topic_insight_lines(
 
     for insight in insights[:10]:
         review = review_lookup.get(insight.get("topic_id"), {})
+        reasoning_method = (
+            insight.get("reasoning_method")
+            or (insights_payload.get("meta") or {}).get("reasoning_method")
+            or "evidence-first"
+        )
         lines.append(f"### {insight.get('label') or insight.get('topic_id')}")
+        lines.append(f"- 사고 방식: {REASONING_METHOD_LABELS.get(reasoning_method, reasoning_method)}")
         lines.append(f"- 결론: {insight.get('conclusion')}")
         insight_confidence = insight.get("confidence_ko") or CONFIDENCE_KO.get(insight.get("confidence", ""), "알 수 없음")
         review_confidence = review.get("adjusted_confidence_ko") or CONFIDENCE_KO.get(review.get("adjusted_confidence", ""), "알 수 없음")
@@ -498,7 +510,28 @@ def build_topic_insight_lines(
         background = insight.get("background_reference") or {}
         stale = insight.get("stale_reference") or {}
 
-        if purpose == "change-tracking":
+        if reasoning_method == "pyramid":
+            for support in (insight.get("key_supports") or [])[:3]:
+                lines.append(f"- 핵심 근거: {support}")
+            if insight.get("wider_significance"):
+                lines.append(f"- 의미: {insight.get('wider_significance')}")
+            for action in (insight.get("suggested_actions") or [])[:2]:
+                lines.append(f"- 권장 후속 조치: {action}")
+
+        elif reasoning_method == "hypothesis-driven":
+            if insight.get("working_hypothesis"):
+                lines.append(f"- 가설: {insight.get('working_hypothesis')}")
+            for point in (insight.get("validation_points") or [])[:3]:
+                status = point.get("status") or "unknown"
+                lines.append(f"- 검증({status}): {point.get('check')}: {point.get('result')}")
+            if insight.get("hypothesis_status"):
+                lines.append(f"- 가설 판정: {insight.get('hypothesis_status')}")
+            if insight.get("pivot_question"):
+                lines.append(f"- 추가 확인 질문: {insight.get('pivot_question')}")
+            for action in (insight.get("suggested_actions") or [])[:2]:
+                lines.append(f"- 다음 검증 행동: {action}")
+
+        elif purpose == "change-tracking":
             # 변경 추적: 변경 내역 확장, 충돌 축소
             for change in (insight.get("recent_change_summary") or [])[:8]:
                 lines.append(f"- 변경: {change}")
@@ -583,6 +616,27 @@ def build_markdown_general(
         lines.append("- 프로필 정보 또는 API 제한 때문에 일부 문서는 확신이 낮습니다.")
     if meta.get("preferred_space_expansion", {}).get("used"):
         lines.append("- 선호 space 내부의 연관 문서를 추가 탐색해 검토 범위와 우선순위를 보강했습니다.")
+    lines.append("")
+
+    if insights_payload:
+        lines.append("## 지금 주목해야 할 주제")
+        topics = insights_payload.get("insights", [])[:5]
+        if topics:
+            for insight in topics:
+                why_now = (
+                    (insight.get("recent_change_summary") or [None])[0]
+                    or (insight.get("conflict_notes") or [None])[0]
+                    or insight.get("conclusion")
+                )
+                lines.append(f"- **{insight.get('label') or insight.get('topic_id')}**: {why_now}")
+        else:
+            lines.append("- 현재 시점에 별도로 부각할 주제가 충분하지 않습니다.")
+        lines.append("")
+
+    lines.append("## 우선 읽을 문서")
+    for item in scored_pages[:5]:
+        reason = (item.get("evidence") or ["우선순위 상위 문서입니다."])[0]
+        lines.append(f"- **{item['title']}**: {reason}")
     lines.append("")
 
     topic_lines = build_topic_insight_lines(insights_payload, review_payload, "general")
@@ -918,10 +972,14 @@ def main() -> int:
         payload = json.load(handle)
     expansion_payload = read_json(args.expansion_input)
     payload = merge_expansion_payload(payload, expansion_payload)
+    preferred_space_inference_payload = read_json(args.preferred_space_inference_input)
     insights_payload = read_json(args.insights_input)
     review_payload = read_json(args.review_input)
 
     meta = payload.get("meta", {})
+    if preferred_space_inference_payload:
+        meta["inferred_preferred_spaces"] = preferred_space_inference_payload.get("preferred_spaces", [])
+        meta["preferred_space_inference"] = preferred_space_inference_payload
     pages = payload.get("pages", [])
     warnings = payload.get("warnings", [])
     relationships = payload.get("relationships", [])
@@ -1065,6 +1123,12 @@ def main() -> int:
                 )
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
 
+    change_focus_summary = []
+    for event in timeline[:5]:
+        summary = event.get("summary_ko")
+        if summary and summary not in change_focus_summary:
+            change_focus_summary.append(summary)
+
     trusted_data = synthesize_trusted_data(scored_pages, page_lookup)
     synthesized_overview = synthesize_overview(scored_pages, page_lookup)
 
@@ -1086,8 +1150,14 @@ def main() -> int:
         handle.write(markdown)
 
     if args.emit_json_summary:
+        reasoning_method = (
+            ((insights_payload or {}).get("meta") or {}).get("reasoning_method")
+            or "evidence-first"
+        )
         summary_payload = {
             "purpose": args.purpose,
+            "synthesis_strategy": ((insights_payload or {}).get("meta") or {}).get("strategy"),
+            "reasoning_method": reasoning_method,
             "summary": {
                 "best_current_candidate_page_id": max(scored_pages, key=lambda item: item["freshness_score"], default={}).get("page_id"),
                 "best_trust_candidate_page_id": max(scored_pages, key=lambda item: item["trust_score"], default={}).get("page_id"),
@@ -1109,6 +1179,20 @@ def main() -> int:
             "trusted_data": trusted_data,
             "insights_summary": (insights_payload or {}).get("summary"),
             "review_summary": (review_payload or {}).get("summary"),
+            "attention_topics": [
+                {
+                    "topic_id": insight.get("topic_id"),
+                    "label": insight.get("label"),
+                    "why_now": (
+                        (insight.get("recent_change_summary") or [None])[0]
+                        or (insight.get("conflict_notes") or [None])[0]
+                        or insight.get("conclusion")
+                    ),
+                }
+                for insight in (insights_payload or {}).get("insights", [])[:5]
+            ],
+            "change_drivers": change_focus_summary,
+            "preferred_space_inference": preferred_space_inference_payload,
             "timeline": timeline[:50],
             "warnings": warnings,
         }
@@ -1168,6 +1252,8 @@ def main() -> int:
             "feature_latest_path": feature_paths["latest_path"],
             "feature_history_path": feature_paths["history_path"],
         }
+        if change_focus_summary:
+            summary_payload["meta"]["data_artifacts"]["change_focus_summary"] = change_focus_summary
         with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
             json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")

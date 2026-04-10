@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
@@ -16,6 +16,12 @@ REVIEWER_KO = {
     "trust": "신뢰도 검토",
     "contradiction": "충돌 검토",
     "executive": "실행 관점 검토",
+}
+VALIDATION_STRATEGIES = {
+    "balanced-validator",
+    "strict-validator",
+    "freshness-validator",
+    "executive-validator",
 }
 
 
@@ -28,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="insights.json from synthesize_insights.py")
     parser.add_argument("--output", required=True)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--strategy", default="balanced-validator", choices=sorted(VALIDATION_STRATEGIES))
     return parser.parse_args()
 
 
@@ -38,6 +45,18 @@ def read_json(path: str) -> Dict[str, Any]:
 
 def confidence_rank(level: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(level, 0)
+
+
+def reasoning_method_from_insight(insight: Dict[str, Any]) -> str:
+    method = insight.get("reasoning_method")
+    if method:
+        return method
+    strategy = insight.get("strategy")
+    if strategy == "pyramid-synthesis":
+        return "pyramid"
+    if strategy == "hypothesis-driven-synthesis":
+        return "hypothesis-driven"
+    return "evidence-first"
 
 
 def freshness_review(insight: Dict[str, Any]) -> Dict[str, Any]:
@@ -108,7 +127,7 @@ def trust_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
+def contradiction_review(insight: Dict[str, Any], reasoning_method: str) -> Dict[str, Any]:
     findings: List[str] = []
     severity = "pass"
     conflicts = insight.get("conflict_notes", [])
@@ -122,6 +141,9 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
         if current.get("page_id") != background.get("page_id") and not conflicts:
             findings.append("현재 기준 문서와 배경 참고 문서가 다르지만 충돌 메모가 명시되지 않았습니다.")
             severity = "warn"
+    if reasoning_method == "hypothesis-driven" and insight.get("hypothesis_status") == "supported" and conflicts:
+        findings.append("반증 또는 충돌 근거가 있는데 가설 상태가 supported 로 유지되어 있습니다.")
+        severity = "fail"
 
     if not findings:
         findings.append("해결되지 않은 충돌 신호는 뚜렷하지 않습니다.")
@@ -135,7 +157,7 @@ def contradiction_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
+def executive_review(insight: Dict[str, Any], reasoning_method: str) -> Dict[str, Any]:
     findings: List[str] = []
     severity = "pass"
 
@@ -148,6 +170,35 @@ def executive_review(insight: Dict[str, Any]) -> Dict[str, Any]:
     if not insight.get("conclusion"):
         findings.append("인사이트에 명시적인 결론이 없습니다.")
         severity = "fail"
+
+    if reasoning_method == "pyramid":
+        key_supports = insight.get("key_supports", [])
+        if not insight.get("executive_answer"):
+            findings.append("피라미드 방식인데 답을 먼저 제시하는 executive_answer 가 없습니다.")
+            severity = "fail"
+        if len(key_supports) > 3:
+            findings.append("피라미드 방식의 핵심 근거가 4개 이상으로 과도합니다.")
+            severity = "fail"
+        if len(key_supports) != len(set(key_supports)):
+            findings.append("피라미드 방식의 핵심 근거가 중복됩니다.")
+            severity = "fail"
+        wider_significance = insight.get("wider_significance")
+        if not wider_significance:
+            findings.append("피라미드 방식인데 wider_significance 가 없습니다.")
+            severity = "fail"
+        elif wider_significance == insight.get("executive_answer"):
+            findings.append("wider_significance 가 결론의 재서술에 머물러 있습니다.")
+            severity = "warn"
+    elif reasoning_method == "hypothesis-driven":
+        if not insight.get("working_hypothesis"):
+            findings.append("가설 기반 방식인데 working_hypothesis 가 없습니다.")
+            severity = "fail"
+        if not insight.get("validation_points"):
+            findings.append("가설 기반 방식인데 validation_points 가 없습니다.")
+            severity = "fail"
+        if not insight.get("hypothesis_status"):
+            findings.append("가설 기반 방식인데 hypothesis_status 가 없습니다.")
+            severity = "fail"
 
     if not findings:
         findings.append("인사이트가 간결하고 실행 지향적으로 정리되어 있습니다.")
@@ -170,7 +221,7 @@ def combine_reviews(reviews: List[Dict[str, Any]]) -> str:
     return "approved"
 
 
-def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
+def adjust_confidence(original: str, reviews: List[Dict[str, Any]], strategy: str) -> str:
     score = confidence_rank(original)
     warn_count = 0
     fail_count = 0
@@ -180,8 +231,13 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
         elif review.get("severity") == "warn":
             warn_count += 1
 
-    score -= min(fail_count, 1)
-    if warn_count >= 2:
+    score -= min(fail_count, 1 if strategy == "balanced-validator" else 2)
+    warn_threshold = 2
+    if strategy == "strict-validator":
+        warn_threshold = 1
+    elif strategy in {"freshness-validator", "executive-validator"}:
+        warn_threshold = 2
+    if warn_count >= warn_threshold:
         score -= 1
     if fail_count >= 2:
         score -= 1
@@ -193,28 +249,45 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
     return "low"
 
 
-def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str, Any]:
+def review_topic(
+    insight: Dict[str, Any],
+    purpose: str = "general",
+    strategy: str = "balanced-validator",
+) -> Dict[str, Any]:
+    reasoning_method = reasoning_method_from_insight(insight)
     reviews = [
         freshness_review(insight),
         trust_review(insight),
-        contradiction_review(insight),
-        executive_review(insight),
+        contradiction_review(insight, reasoning_method),
+        executive_review(insight, reasoning_method),
     ]
 
-    # Purpose-specific reviewer weighting: duplicate the dominant reviewer
-    # so its severity counts twice in combine_reviews and adjust_confidence.
-    if purpose == "change-tracking":
+    if strategy == "strict-validator":
+        reviews.extend(
+            [
+                freshness_review(insight),
+                contradiction_review(insight, reasoning_method),
+                executive_review(insight, reasoning_method),
+            ]
+        )
+    elif strategy == "freshness-validator":
+        reviews.append(freshness_review(insight))
+    elif strategy == "executive-validator":
+        reviews.append(executive_review(insight, reasoning_method))
+    elif purpose == "change-tracking":
         reviews.append(freshness_review(insight))
     elif purpose == "onboarding":
-        reviews.append(executive_review(insight))
+        reviews.append(executive_review(insight, reasoning_method))
 
     verdict = combine_reviews(reviews)
-    adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews)
+    adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews, strategy)
     requires_follow_up = verdict != "approved"
 
     return {
         "topic_id": insight.get("topic_id"),
         "label": insight.get("label"),
+        "strategy": strategy,
+        "reasoning_method": reasoning_method,
         "original_confidence": insight.get("confidence"),
         "original_confidence_ko": CONFIDENCE_KO.get(insight.get("confidence"), "알 수 없음"),
         "adjusted_confidence": adjusted_confidence,
@@ -242,7 +315,7 @@ def main() -> int:
     payload = read_json(args.input)
     insights = payload.get("insights", [])
 
-    reviewed = [review_topic(insight, args.purpose) for insight in insights]
+    reviewed = [review_topic(insight, args.purpose, args.strategy) for insight in insights]
     reviewed.sort(
         key=lambda item: (
             item.get("verdict") == "approved",
@@ -256,6 +329,7 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "review_insights",
             "purpose": args.purpose,
+            "strategy": args.strategy,
             "input": args.input,
             "topic_count": len(reviewed),
         },

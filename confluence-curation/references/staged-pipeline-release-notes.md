@@ -21,6 +21,9 @@
 - `scripts/extract_evidence.py`
 - `scripts/synthesize_insights.py`
 - `scripts/review_insights.py`
+- `scripts/infer_preferred_spaces.py`
+- `scripts/render_insight_brief.py`
+- `scripts/answer_followup.py`
 - `scripts/smoke_pipeline.py`
 - `fixtures/pipeline_fixture.json`
 
@@ -47,7 +50,25 @@
 - 이 단계만 네트워크에 의존한다.
 - 이후 단계는 모두 오프라인 artifact 처리다.
 
-### 2. Normalize
+### 2. Infer Preferred Spaces
+
+스크립트:
+- `confluence-curation/scripts/infer_preferred_spaces.py`
+
+입력:
+- 1차 fetch 또는 merge 결과
+
+출력:
+- `preferred-spaces.json`
+
+역할:
+- 초기 검색 결과에서 어떤 space 를 더 신뢰하고 확장 탐색할지 내부적으로 추론
+- 사용자가 모든 space 를 알지 못해도 뒤에서 자동으로 탐색 범위를 넓힘
+
+현재 구현 메모:
+- 최근 변경, 반복 기여자, 팀/작성자 신호, 본문 밀도, 저장본 대비 변경 여부를 함께 본다.
+
+### 3. Normalize
 
 스크립트:
 - `confluence-curation/scripts/normalize_confluence.py`
@@ -69,7 +90,7 @@
 의도:
 - 이후 단계가 fetch payload의 원시 구조에 직접 의존하지 않도록 중간 schema를 고정한다.
 
-### 3. Cluster
+### 4. Cluster
 
 스크립트:
 - `confluence-curation/scripts/cluster_confluence.py`
@@ -96,7 +117,7 @@
 - singleton도 cluster로 유지한다.
 - background page 선택 로직은 current page와 동일한 최신 문서로 치우치지 않도록 보정되어 있다.
 
-### 4. Evidence Extraction
+### 5. Evidence Extraction
 
 스크립트:
 - `confluence-curation/scripts/extract_evidence.py`
@@ -121,7 +142,7 @@
 - manifest의 `output_path` 는 절대경로로 저장된다.
 - 따라서 synthesis 단계는 실행 위치가 달라도 동일하게 동작한다.
 
-### 5. Insight Synthesis
+### 6. Insight Synthesis
 
 스크립트:
 - `confluence-curation/scripts/synthesize_insights.py`
@@ -144,7 +165,7 @@
 - 시스템이 생성하는 문장은 한국어로 출력된다.
 - confidence는 `confidence` 와 `confidence_ko` 를 함께 가진다.
 
-### 6. Review Pass
+### 7. Review Pass
 
 스크립트:
 - `confluence-curation/scripts/review_insights.py`
@@ -170,7 +191,7 @@ review lenses:
 - reviewer/severity/verdict에 대해 `_ko` 필드도 함께 저장한다.
 - 경고가 많다고 무조건 confidence가 급락하지 않도록 감점 폭을 완화했다.
 
-### 7. Final Report Rendering
+### 8. Final Report Rendering
 
 스크립트:
 - `confluence-curation/scripts/curate_confluence.py`
@@ -186,8 +207,20 @@ review lenses:
 
 역할:
 - 기존 page-level curation 결과 유지
+- `## 지금 주목해야 할 주제`
+- `## 우선 읽을 문서`
 - `## 주제별 인사이트` 섹션 추가
 - review 결과를 반영해 확신도와 검토 메모를 표시
+
+### 9. Brief And Follow-Up Answers
+
+스크립트:
+- `confluence-curation/scripts/render_insight_brief.py`
+- `confluence-curation/scripts/answer_followup.py`
+
+역할:
+- 첫 응답을 브리핑형 요약으로 정리
+- 후속 질문을 artifacts 기반으로 다시 해석해 설명, 근거, 다음 행동을 분리해 답변
 
 현재 구현 메모:
 - 기존 사용자와의 호환성을 위해 `--insights-input`, `--review-input` 이 없으면 legacy flow처럼 동작한다.
