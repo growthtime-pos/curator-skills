@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Validate Stage
+short_description: synthesized insight를 second-pass reviewer 관점으로 재검토합니다.
+default_prompt: validate stage에서는 선택한 validator strategy에 맞춰 review_insights.py를 실행해. confidence 재보정과 verdict를 분명히 남기고, 어떤 reviewer lens가 더 강하게 적용됐는지 output meta에서 드러나게 해.

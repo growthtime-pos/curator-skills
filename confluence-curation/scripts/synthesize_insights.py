@@ -9,7 +9,14 @@ from typing import Any, Dict, List, Optional
 
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
-ANALYSIS_METHODS = ["evidence-first", "pyramid", "hypothesis-driven"]
+SYNTHESIS_STRATEGIES = {
+    "balanced-synthesis",
+    "briefing-synthesis",
+    "action-heavy-synthesis",
+    "evidence-first-synthesis",
+    "pyramid-synthesis",
+    "hypothesis-driven-synthesis",
+}
 
 
 def iso_now() -> str:
@@ -23,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-actions", type=int, default=3)
     parser.add_argument("--max-snippets", type=int, default=3)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
-    parser.add_argument("--analysis-method", default="evidence-first", choices=ANALYSIS_METHODS)
+    parser.add_argument("--strategy", default="balanced-synthesis", choices=sorted(SYNTHESIS_STRATEGIES))
     return parser.parse_args()
 
 
@@ -64,6 +71,14 @@ def choose_evidence_snippets(pack: Dict[str, Any], max_snippets: int) -> List[Di
     return snippets[:max_snippets]
 
 
+def reasoning_method_for_strategy(strategy: str) -> str:
+    if strategy == "pyramid-synthesis":
+        return "pyramid"
+    if strategy == "hypothesis-driven-synthesis":
+        return "hypothesis-driven"
+    return "evidence-first"
+
+
 def build_support_items(pack: Dict[str, Any]) -> List[str]:
     items: List[str] = []
     current = pack.get("current_candidate")
@@ -79,9 +94,13 @@ def build_support_items(pack: Dict[str, Any]) -> List[str]:
             f"배경/정책 맥락은 `{trusted.get('title')}` 에 더 강하게 남아 있어 실행 문서와 참고 문서가 분리되어 있습니다."
         )
     if pack.get("recent_changes"):
-        items.append(f"최근 변경 신호가 {len(pack.get('recent_changes', []))}건 있어 문서 운영 상태가 계속 변하고 있습니다.")
+        items.append(
+            f"최근 변경 신호가 {len(pack.get('recent_changes', []))}건 있어 문서 운영 상태가 계속 변하고 있습니다."
+        )
     if pack.get("conflict_notes"):
-        items.append(f"충돌 또는 중복 신호가 {len(pack.get('conflict_notes', []))}건 있어 기준 문서 정리가 필요합니다.")
+        items.append(
+            f"충돌 또는 중복 신호가 {len(pack.get('conflict_notes', []))}건 있어 기준 문서 정리가 필요합니다."
+        )
     if stale:
         items.append(f"`{stale.get('title')}` 는 오래된 참고 후보로 남아 있어 재사용 전에 검증이 필요합니다.")
     if pack.get("missing_signals"):
@@ -202,7 +221,11 @@ def derive_pivot_question(pack: Dict[str, Any], hypothesis_status: str) -> Optio
     return "현재 문서를 기준 정보로 보기 전에 최신 본문 근거와 소유자 신호를 보강해야 합니다."
 
 
-def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "general") -> str:
+def derive_evidence_first_conclusion(
+    pack: Dict[str, Any],
+    purpose: str = "general",
+    strategy: str = "balanced-synthesis",
+) -> str:
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
@@ -211,6 +234,11 @@ def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "gener
     if purpose == "change-tracking":
         change_count = len(recent_changes)
         if current and change_count > 0:
+            if strategy == "action-heavy-synthesis":
+                return (
+                    f"이 주제에서는 최근 {change_count}건의 변경이 감지되었고, "
+                    f"`{current.get('title')}` 중심으로 추적과 후속 조치가 필요합니다."
+                )
             return (
                 f"이 주제에서는 최근 {change_count}건의 변경이 감지되었으며, "
                 f"`{current.get('title')}` 를 중심으로 활발한 업데이트가 이루어지고 있습니다."
@@ -220,6 +248,8 @@ def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "gener
         return "이 주제에서는 최근 의미 있는 변경 활동이 관측되지 않았습니다."
 
     if purpose == "onboarding":
+        if strategy == "briefing-synthesis" and current:
+            return f"이 주제의 첫 읽기 문서로는 `{current.get('title')}` 를 추천합니다."
         if current and trusted and current.get("page_id") == trusted.get("page_id"):
             return f"이 주제를 처음 접한다면 `{current.get('title')}` 부터 읽는 것을 추천합니다. 가장 최신이면서 신뢰도도 높은 문서입니다."
         if current and trusted:
@@ -233,6 +263,8 @@ def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "gener
             return f"이 주제의 문서는 `{stale.get('title')}` 가 있지만 오래되어, 최신 상황은 담당자에게 직접 확인하는 것이 좋습니다."
         return "이 주제는 시작점으로 삼을 만한 문서가 아직 충분하지 않습니다."
 
+    if strategy == "briefing-synthesis" and current:
+        return f"현재 이 주제의 기준 문서는 `{current.get('title')}` 로 보는 편이 가장 안전합니다."
     if current and trusted and current.get("page_id") == trusted.get("page_id"):
         return f"이 주제의 현재 작업 기준 문서로는 `{current.get('title')}` 를 우선 참고하는 것이 적절합니다."
     if current and trusted:
@@ -246,10 +278,9 @@ def derive_evidence_first_conclusion(pack: Dict[str, Any], purpose: str = "gener
     return "이 주제는 신뢰할 만한 작업 기준 문서를 고를 만큼 근거가 충분하지 않습니다."
 
 
-def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", analysis_method: str = "evidence-first") -> str:
-    if analysis_method == "pyramid":
-        return derive_evidence_first_conclusion(pack, purpose)
-    if analysis_method == "hypothesis-driven":
+def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", strategy: str = "balanced-synthesis") -> str:
+    reasoning_method = reasoning_method_for_strategy(strategy)
+    if reasoning_method == "hypothesis-driven":
         hypothesis_status = derive_hypothesis_status(pack)
         hypothesis = derive_hypothesis(pack, purpose)
         if hypothesis_status == "supported":
@@ -257,8 +288,7 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", analysis_m
         if hypothesis_status == "mixed":
             return f"가설은 부분적으로만 지지됩니다: {hypothesis}"
         return f"가설을 그대로 채택하기 어렵습니다: {hypothesis}"
-
-    return derive_evidence_first_conclusion(pack, purpose)
+    return derive_evidence_first_conclusion(pack, purpose, strategy)
 
 
 def derive_change_summary(pack: Dict[str, Any]) -> List[str]:
@@ -279,7 +309,12 @@ def derive_gap_summary(pack: Dict[str, Any]) -> List[str]:
     return gaps
 
 
-def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "general") -> List[str]:
+def derive_actions(
+    pack: Dict[str, Any],
+    max_actions: int,
+    purpose: str = "general",
+    strategy: str = "balanced-synthesis",
+) -> List[str]:
     actions: List[str] = []
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
@@ -287,8 +322,18 @@ def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "gener
     conflict_notes = pack.get("conflict_notes", [])
     maintainers = pack.get("maintainer_signals", [])
     recent_changes = pack.get("recent_changes", [])
+    reasoning_method = reasoning_method_for_strategy(strategy)
 
-    if purpose == "change-tracking":
+    if reasoning_method == "hypothesis-driven":
+        if maintainers:
+            actions.append(f"`{maintainers[0].get('display_name')}` 에게 현재 기준 문서 가설을 확인하세요.")
+        if conflict_notes:
+            actions.append("상충하는 문서 중 실제 운영 기준이 무엇인지 검증 회의를 잡으세요.")
+        if current:
+            actions.append(f"`{current.get('title')}` 의 최신 본문이 실제 운영 절차와 일치하는지 검증하세요.")
+        if pack.get("missing_signals"):
+            actions.append("누락된 프로필 또는 본문 근거를 보강한 뒤 가설 상태를 다시 판단하세요.")
+    elif purpose == "change-tracking":
         if recent_changes:
             actions.append("이 주제의 변경 활동을 주기적으로 모니터링하세요.")
         if maintainers:
@@ -298,7 +343,6 @@ def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "gener
             actions.append(f"`{current.get('title')}` 의 업데이트 추이를 팔로업하세요.")
         if conflict_notes:
             actions.append("관련 프로젝트 간 문서 내용이 상충하는 부분이 있는지 확인하세요.")
-
     elif purpose == "onboarding":
         if current:
             actions.append(f"`{current.get('title')}` 를 먼저 읽으세요.")
@@ -309,9 +353,7 @@ def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "gener
             actions.append(f"추가 질문은 `{top.get('display_name')}` 에게 문의하세요.")
         if stale:
             actions.append(f"`{stale.get('title')}` 는 오래되었으나 역사적 맥락 파악에 도움이 됩니다.")
-
     else:
-        # general (기존 로직)
         if current and trusted and current.get("page_id") != trusted.get("page_id"):
             actions.append(
                 f"`{current.get('title')}` 에 `{trusted.get('title')}` 의 정책/배경 문맥을 링크하거나 통합할지 검토하세요."
@@ -327,6 +369,16 @@ def derive_actions(pack: Dict[str, Any], max_actions: int, purpose: str = "gener
             )
         if pack.get("missing_signals"):
             actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
+
+    if strategy == "action-heavy-synthesis":
+        if recent_changes:
+            actions.append("최근 변경 내용을 담당자 확인 없이 운영 기준으로 바로 반영하지 말고 변경 의도를 검증하세요.")
+        if conflict_notes:
+            actions.append("충돌 메모가 남은 문서는 이번 주 안에 기준 문서/배경 문서로 역할을 분리하세요.")
+    elif strategy == "briefing-synthesis":
+        actions = actions[: max(1, min(max_actions, 2))]
+    elif strategy == "pyramid-synthesis":
+        actions = actions[: min(max_actions, 2)]
 
     deduped: List[str] = []
     for action in actions:
@@ -361,18 +413,14 @@ def synthesize_topic(
     max_actions: int,
     max_snippets: int,
     purpose: str = "general",
-    analysis_method: str = "evidence-first",
+    strategy: str = "balanced-synthesis",
 ) -> Dict[str, Any]:
+    reasoning_method = reasoning_method_for_strategy(strategy)
     current = pack.get("current_candidate")
     trusted = pack.get("trusted_candidate")
     stale = pack.get("stale_candidate")
-    key_supports = derive_key_supports(pack) if analysis_method == "pyramid" else []
-    wider_significance = derive_wider_significance(pack, purpose) if analysis_method == "pyramid" else None
-    working_hypothesis = derive_hypothesis(pack, purpose) if analysis_method == "hypothesis-driven" else None
-    validation_points = derive_validation_points(pack) if analysis_method == "hypothesis-driven" else []
-    hypothesis_status = derive_hypothesis_status(pack) if analysis_method == "hypothesis-driven" else None
-    pivot_question = derive_pivot_question(pack, hypothesis_status) if analysis_method == "hypothesis-driven" else None
-    conclusion = derive_conclusion(pack, purpose, analysis_method)
+    executive_answer = derive_evidence_first_conclusion(pack, purpose, strategy)
+    conclusion = derive_conclusion(pack, purpose, strategy)
     confidence = calibrate_confidence(pack)
     evidence_page_ids = sorted(
         {
@@ -390,15 +438,16 @@ def synthesize_topic(
     return {
         "topic_id": pack.get("topic_id"),
         "label": pack.get("label"),
-        "analysis_method": analysis_method,
+        "strategy": strategy,
+        "reasoning_method": reasoning_method,
         "conclusion": conclusion,
-        "executive_answer": conclusion if analysis_method == "pyramid" else None,
-        "key_supports": key_supports,
-        "wider_significance": wider_significance,
-        "working_hypothesis": working_hypothesis,
-        "validation_points": validation_points,
-        "hypothesis_status": hypothesis_status,
-        "pivot_question": pivot_question,
+        "executive_answer": executive_answer if reasoning_method == "pyramid" else None,
+        "key_supports": derive_key_supports(pack) if reasoning_method == "pyramid" else [],
+        "wider_significance": derive_wider_significance(pack, purpose) if reasoning_method == "pyramid" else None,
+        "working_hypothesis": derive_hypothesis(pack, purpose) if reasoning_method == "hypothesis-driven" else None,
+        "validation_points": derive_validation_points(pack) if reasoning_method == "hypothesis-driven" else [],
+        "hypothesis_status": derive_hypothesis_status(pack) if reasoning_method == "hypothesis-driven" else None,
+        "pivot_question": derive_pivot_question(pack, derive_hypothesis_status(pack)) if reasoning_method == "hypothesis-driven" else None,
         "confidence": confidence,
         "confidence_ko": CONFIDENCE_KO.get(confidence, "알 수 없음"),
         "current_reference": summarize_candidate(current),
@@ -411,7 +460,7 @@ def synthesize_topic(
         ],
         "conflict_notes": pack.get("conflict_notes", []),
         "evidence_gaps": derive_gap_summary(pack),
-        "suggested_actions": derive_actions(pack, max_actions, purpose),
+        "suggested_actions": derive_actions(pack, max_actions, purpose, strategy),
         "evidence_page_ids": evidence_page_ids,
         "evidence_snippets": choose_evidence_snippets(pack, max_snippets),
         "warnings": pack.get("warnings", []),
@@ -446,7 +495,12 @@ def main() -> int:
             continue
         pack = read_json(pack_path)
         max_snippets = args.max_snippets if args.purpose != "onboarding" else max(args.max_snippets, 5)
-        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose, args.analysis_method))
+        max_actions = args.max_actions
+        if args.strategy == "briefing-synthesis":
+            max_snippets = min(max_snippets, 2)
+        if args.strategy == "action-heavy-synthesis":
+            max_actions = max(max_actions, 4)
+        insights.append(synthesize_topic(pack, max_actions, max_snippets, args.purpose, args.strategy))
 
     insights.sort(
         key=lambda item: (
@@ -462,7 +516,8 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "synthesize_insights",
             "purpose": args.purpose,
-            "analysis_method": args.analysis_method,
+            "strategy": args.strategy,
+            "reasoning_method": reasoning_method_for_strategy(args.strategy),
             "manifest": args.manifest,
             "topic_count": len(insights),
         },
