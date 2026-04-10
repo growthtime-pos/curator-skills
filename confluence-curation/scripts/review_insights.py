@@ -17,6 +17,12 @@ REVIEWER_KO = {
     "contradiction": "충돌 검토",
     "executive": "실행 관점 검토",
 }
+VALIDATION_STRATEGIES = {
+    "balanced-validator",
+    "strict-validator",
+    "freshness-validator",
+    "executive-validator",
+}
 
 
 def iso_now() -> str:
@@ -28,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="insights.json from synthesize_insights.py")
     parser.add_argument("--output", required=True)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--strategy", default="balanced-validator", choices=sorted(VALIDATION_STRATEGIES))
     return parser.parse_args()
 
 
@@ -170,7 +177,7 @@ def combine_reviews(reviews: List[Dict[str, Any]]) -> str:
     return "approved"
 
 
-def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
+def adjust_confidence(original: str, reviews: List[Dict[str, Any]], strategy: str) -> str:
     score = confidence_rank(original)
     warn_count = 0
     fail_count = 0
@@ -180,8 +187,13 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
         elif review.get("severity") == "warn":
             warn_count += 1
 
-    score -= min(fail_count, 1)
-    if warn_count >= 2:
+    score -= min(fail_count, 1 if strategy == "balanced-validator" else 2)
+    warn_threshold = 2
+    if strategy == "strict-validator":
+        warn_threshold = 1
+    elif strategy in {"freshness-validator", "executive-validator"}:
+        warn_threshold = 2
+    if warn_count >= warn_threshold:
         score -= 1
     if fail_count >= 2:
         score -= 1
@@ -193,7 +205,11 @@ def adjust_confidence(original: str, reviews: List[Dict[str, Any]]) -> str:
     return "low"
 
 
-def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str, Any]:
+def review_topic(
+    insight: Dict[str, Any],
+    purpose: str = "general",
+    strategy: str = "balanced-validator",
+) -> Dict[str, Any]:
     reviews = [
         freshness_review(insight),
         trust_review(insight),
@@ -201,20 +217,31 @@ def review_topic(insight: Dict[str, Any], purpose: str = "general") -> Dict[str,
         executive_review(insight),
     ]
 
-    # Purpose-specific reviewer weighting: duplicate the dominant reviewer
-    # so its severity counts twice in combine_reviews and adjust_confidence.
-    if purpose == "change-tracking":
+    if strategy == "strict-validator":
+        reviews.extend(
+            [
+                freshness_review(insight),
+                contradiction_review(insight),
+                executive_review(insight),
+            ]
+        )
+    elif strategy == "freshness-validator":
+        reviews.append(freshness_review(insight))
+    elif strategy == "executive-validator":
+        reviews.append(executive_review(insight))
+    elif purpose == "change-tracking":
         reviews.append(freshness_review(insight))
     elif purpose == "onboarding":
         reviews.append(executive_review(insight))
 
     verdict = combine_reviews(reviews)
-    adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews)
+    adjusted_confidence = adjust_confidence(insight.get("confidence", "low"), reviews, strategy)
     requires_follow_up = verdict != "approved"
 
     return {
         "topic_id": insight.get("topic_id"),
         "label": insight.get("label"),
+        "strategy": strategy,
         "original_confidence": insight.get("confidence"),
         "original_confidence_ko": CONFIDENCE_KO.get(insight.get("confidence"), "알 수 없음"),
         "adjusted_confidence": adjusted_confidence,
@@ -242,7 +269,7 @@ def main() -> int:
     payload = read_json(args.input)
     insights = payload.get("insights", [])
 
-    reviewed = [review_topic(insight, args.purpose) for insight in insights]
+    reviewed = [review_topic(insight, args.purpose, args.strategy) for insight in insights]
     reviewed.sort(
         key=lambda item: (
             item.get("verdict") == "approved",
@@ -256,6 +283,7 @@ def main() -> int:
             "generated_at": iso_now(),
             "source_type": "review_insights",
             "purpose": args.purpose,
+            "strategy": args.strategy,
             "input": args.input,
             "topic_count": len(reviewed),
         },
