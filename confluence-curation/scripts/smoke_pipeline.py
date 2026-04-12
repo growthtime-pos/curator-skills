@@ -195,6 +195,17 @@ def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Dict[str
         page.setdefault("discovery_source", "query_seed")
         page.setdefault("discovery_reasons", ["키워드 검색 시드"])
         page.setdefault(
+            "retrieval_paths",
+            [
+                {
+                    "kind": "query_seed",
+                    "space_key": page.get("space_key"),
+                    "query": "deploy",
+                    "reasons": page.get("discovery_reasons", ["키워드 검색 시드"]),
+                }
+            ],
+        )
+        page.setdefault(
             "preferred_space_match",
             page.get("space_key") in preferred_spaces if preferred_spaces else False,
         )
@@ -206,8 +217,21 @@ def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Dict[str
             continue
         expanded_page = dict(page)
         expanded_page.setdefault("discovery_source", "preferred_space_expansion")
+        expanded_page.setdefault("discovery_reasons", [])
         expanded_page.setdefault("preferred_space_match", True)
         expanded_page.setdefault("preferred_space_boost", 8)
+        expanded_page.setdefault(
+            "retrieval_paths",
+            [
+                {
+                    "kind": "preferred_space_expansion",
+                    "preferred_space": expanded_page.get("space_key"),
+                    "seed_page_ids": expanded_page.get("related_seed_page_ids", []),
+                    "relatedness_score": expanded_page.get("relatedness_score"),
+                    "reasons": expanded_page.get("discovery_reasons", []),
+                }
+            ],
+        )
         pages.append(expanded_page)
         page_ids.add(page_id)
 

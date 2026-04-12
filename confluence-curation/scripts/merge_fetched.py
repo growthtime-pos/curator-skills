@@ -28,6 +28,71 @@ def _page_richness(page: Dict[str, Any]) -> int:
     return score
 
 
+def _unique_strings(values: List[str]) -> List[str]:
+    seen = set()
+    merged: List[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        merged.append(value)
+    return merged
+
+
+def _merge_dict_list(primary: List[Dict[str, Any]], secondary: List[Dict[str, Any]], key_fields: Tuple[str, ...]) -> List[Dict[str, Any]]:
+    seen = set()
+    merged: List[Dict[str, Any]] = []
+    for item in list(primary) + list(secondary):
+        key = tuple(item.get(field) for field in key_fields)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _merge_page(existing: Dict[str, Any], new: Dict[str, Any], prefer_new: bool) -> Dict[str, Any]:
+    primary = dict(new if prefer_new else existing)
+    secondary = existing if prefer_new else new
+    primary["recent_contributors"] = _unique_strings(
+        list(primary.get("recent_contributors", [])) + list(secondary.get("recent_contributors", []))
+    )
+    primary["labels"] = _unique_strings(list(primary.get("labels", [])) + list(secondary.get("labels", [])))
+    primary["discovery_reasons"] = _unique_strings(
+        list(primary.get("discovery_reasons", [])) + list(secondary.get("discovery_reasons", []))
+    )
+    primary["retrieval_paths"] = _merge_dict_list(
+        existing.get("retrieval_paths", []),
+        new.get("retrieval_paths", []),
+        ("kind", "space_key", "query", "root_page_id", "label", "all_spaces", "preferred_space", "relatedness_score"),
+    )
+    primary["version_events"] = _merge_dict_list(
+        primary.get("version_events", []),
+        secondary.get("version_events", []),
+        ("version", "updated_at", "account_id"),
+    )
+    primary["ancestors"] = _merge_dict_list(
+        primary.get("ancestors", []),
+        secondary.get("ancestors", []),
+        ("page_id",),
+    )
+    if primary.get("discovery_source") != "query_seed" and secondary.get("discovery_source") == "query_seed":
+        primary["discovery_source"] = "query_seed"
+    primary["preferred_space_match"] = bool(primary.get("preferred_space_match") or secondary.get("preferred_space_match"))
+    primary["preferred_space_boost"] = max(
+        int(primary.get("preferred_space_boost", 0) or 0),
+        int(secondary.get("preferred_space_boost", 0) or 0),
+    )
+    primary["related_seed_page_ids"] = _unique_strings(
+        list(primary.get("related_seed_page_ids", [])) + list(secondary.get("related_seed_page_ids", []))
+    )
+    primary["relatedness_score"] = max(
+        float(primary.get("relatedness_score", 0) or 0),
+        float(secondary.get("relatedness_score", 0) or 0),
+    )
+    return primary
+
+
 def merge_pages(
     all_pages: List[Tuple[str, Dict[str, Any]]],
     max_pages: int,
@@ -46,9 +111,11 @@ def merge_pages(
             existing_ver = existing.get("version_number", 0) or 0
             new_ver = page.get("version_number", 0) or 0
             if new_ver > existing_ver:
-                seen[page_id] = page
+                seen[page_id] = _merge_page(existing, page, prefer_new=True)
             elif new_ver == existing_ver and _page_richness(page) > _page_richness(existing):
-                seen[page_id] = page
+                seen[page_id] = _merge_page(existing, page, prefer_new=True)
+            else:
+                seen[page_id] = _merge_page(existing, page, prefer_new=False)
     pages = list(seen.values())[:max_pages]
     return pages, total_before, len(pages)
 
@@ -70,6 +137,7 @@ def merge_relationships(all_rels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             rel.get("from_page_id", ""),
             rel.get("to_page_id", ""),
             rel.get("type", ""),
+            rel.get("confidence", ""),
         )
         if key not in seen:
             seen.add(key)

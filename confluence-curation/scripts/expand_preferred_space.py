@@ -245,6 +245,15 @@ def choose_matches(
                 "discovery_reasons": best_reasons,
                 "preferred_space_match": True,
                 "preferred_space_boost": 8,
+                "retrieval_paths": [
+                    {
+                        "kind": "preferred_space_expansion",
+                        "preferred_space": candidate.get("space_key"),
+                        "seed_page_ids": best_seed_ids,
+                        "relatedness_score": round(best_score, 2),
+                        "reasons": best_reasons,
+                    }
+                ],
             }
         )
 

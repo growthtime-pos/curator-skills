@@ -197,6 +197,10 @@ def normalize_pages(
                 "change_summary": page.get("change_summary", {}),
                 "maintainer_signals": collect_maintainer_signals(recent_contributors, people_by_id),
                 "relationship_targets": relationship_index.get(page.get("page_id"), {}),
+                "discovery_source": page.get("discovery_source", "query_seed"),
+                "discovery_reasons": page.get("discovery_reasons", []),
+                "retrieval_paths": page.get("retrieval_paths", []),
+                "preferred_space_match": bool(page.get("preferred_space_match")),
                 "signals": {
                     "has_body_excerpt": bool(body_excerpt),
                     "has_labels": bool(page.get("labels")),
