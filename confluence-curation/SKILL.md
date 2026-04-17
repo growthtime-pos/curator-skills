@@ -84,11 +84,12 @@ python3 confluence-curation/scripts/configure_confluence.py clear
 13. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
 14. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
 15. If the user wants per-stage method selection, run `scripts/orchestrate_pipeline.py` and let it choose methods for `pre_analysis / extract / cluster / analyze / synthesize / validate`, then persist `pipeline_plan.json`.
-16. Otherwise run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
-17. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
-18. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
-19. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
-20. Call out ambiguity explicitly instead of hiding it.
+16. Build graph artifacts from the normalized corpus with `scripts/graphify_confluence.py` so later stages can use graph communities, bridge pages, and suggested questions.
+17. Otherwise run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
+18. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
+19. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
+20. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
+21. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -100,16 +101,18 @@ When the user wants more than page ranking, use a staged workflow inspired by ar
 4. **Keyword expansion (mandatory):** Follow the procedure in the "Keyword Expansion" section below, then merge results.
 5. Determine the curation purpose (same as Default Workflow step 6).
 6. Normalize the merged data.
-7. Cluster related pages into topic groups.
-8. Build evidence packs for each topic:
+7. Build graph artifacts from the normalized corpus.
+8. Cluster related pages into topic groups.
+9. Build evidence packs for each topic:
    - current candidate page
    - trusted background page
    - conflicting claims or duplicate pages
    - recent changes and likely maintainers
-9. Synthesize topic-level insights with explicit evidence: `scripts/synthesize_insights.py --purpose {purpose}`
-10. Run a second-pass review over freshness, trust, contradiction, and actionability: `scripts/review_insights.py --purpose {purpose}`
-11. Produce a final Korean report with confidence and open questions: `scripts/curate_confluence.py --purpose {purpose}`
-12. When needed, generate a separate briefing artifact and use saved artifacts to answer follow-up questions.
+   - graph communities and bridge pages when available
+10. Synthesize topic-level insights with explicit evidence: `scripts/synthesize_insights.py --purpose {purpose}`
+11. Run a second-pass review over freshness, trust, contradiction, and actionability: `scripts/review_insights.py --purpose {purpose}`
+12. Produce a final Korean report with confidence and open questions: `scripts/curate_confluence.py --purpose {purpose}`
+13. When needed, generate a separate briefing artifact and use saved artifacts to answer follow-up questions.
 
 Prefer saving intermediate artifacts instead of hiding all reasoning inside one final summary.
 
@@ -121,10 +124,11 @@ Stage model:
 
 1. `stage0_pre_analysis`
 2. `stage1_extract`
-3. `stage2_cluster`
-4. `stage3_analyze`
-5. `stage4_synthesize`
-6. `stage5_validate`
+3. `stage1_graphify`
+4. `stage2_cluster`
+5. `stage3_analyze`
+6. `stage4_synthesize`
+7. `stage5_validate`
 
 Rules:
 

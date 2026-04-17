@@ -58,6 +58,31 @@
       ]
     },
     {
+      "id": "stage1_graphify",
+      "label": "Graphify",
+      "mode": "tool",
+      "selection_prompt": "정규화된 데이터를 graphify graph/artifact 로 구축할지 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "graphify-build",
+        "change-tracking": "graphify-build",
+        "onboarding": "graphify-build"
+      },
+      "methods": [
+        {
+          "id": "graphify-build",
+          "label": "Build graphify artifacts",
+          "runner_kind": "tool",
+          "description": "normalized.json 에서 graph.json, GRAPH_REPORT.md, graph_context.json 을 생성합니다."
+        },
+        {
+          "id": "disabled",
+          "label": "Skip graphify",
+          "runner_kind": "tool",
+          "description": "graphify 구축을 건너뛰고 기존 staged pipeline 만 실행합니다."
+        }
+      ]
+    },
+    {
       "id": "stage2_cluster",
       "label": "Cluster",
       "mode": "skill",

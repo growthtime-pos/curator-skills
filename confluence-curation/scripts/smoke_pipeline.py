@@ -116,6 +116,8 @@ def assert_artifact_shapes(workdir: Path) -> None:
         raise RuntimeError("브리핑 결과에 attention_topics 가 없습니다.")
     if not followup.get("best_explanation_ko"):
         raise RuntimeError("후속 질문 결과에 설명이 없습니다.")
+    if "graph_context_summary" not in followup:
+        raise RuntimeError("후속 질문 결과에 graph context summary 가 없습니다.")
 
 
 def assert_feature_artifacts(workdir: Path) -> None:
@@ -161,6 +163,7 @@ def assert_orchestrator_outputs(workdir: Path, expected_cluster: str, expected_s
         "preferred-spaces.json",
         "merged-expanded.json",
         "normalized.json",
+        "graphify-out/graph_context.json",
         "clusters.json",
         "evidence-manifest.json",
         "insights.json",
@@ -306,6 +309,19 @@ def main() -> int:
         root,
     )
     run_step(
+        [
+            python,
+            "confluence-curation/scripts/graphify_confluence.py",
+            "--normalized-input",
+            str(workdir / "normalized.json"),
+            "--corpus-dir",
+            str(workdir / "graphify-corpus"),
+            "--graphify-out-dir",
+            str(workdir / "graphify-out"),
+        ],
+        root,
+    )
+    run_step(
         [python, "confluence-curation/scripts/cluster_confluence.py", "--input", str(workdir / "normalized.json"), "--output", str(workdir / "clusters.json"), "--data-dir", str(workdir)],
         root,
     )
@@ -325,7 +341,16 @@ def main() -> int:
         root,
     )
     run_step(
-        [python, "confluence-curation/scripts/synthesize_insights.py", "--manifest", str(workdir / "evidence-manifest.json"), "--output", str(workdir / "insights.json")],
+        [
+            python,
+            "confluence-curation/scripts/synthesize_insights.py",
+            "--manifest",
+            str(workdir / "evidence-manifest.json"),
+            "--output",
+            str(workdir / "insights.json"),
+            "--graph-context-input",
+            str(workdir / "graphify-out" / "graph_context.json"),
+        ],
         root,
     )
     run_step(
@@ -384,6 +409,8 @@ def main() -> int:
             str(workdir / "review.json"),
             "--normalized-input",
             str(workdir / "normalized.json"),
+            "--graph-context-input",
+            str(workdir / "graphify-out" / "graph_context.json"),
             "--question",
             "최근 뭐가 바뀌었나",
             "--output",
@@ -401,6 +428,8 @@ def main() -> int:
             str(workdir / "review.json"),
             "--normalized-input",
             str(workdir / "normalized.json"),
+            "--graph-context-input",
+            str(workdir / "graphify-out" / "graph_context.json"),
             "--question",
             "이 표현은 무슨 뜻인가",
             "--output",
@@ -418,6 +447,8 @@ def main() -> int:
             str(workdir / "review.json"),
             "--normalized-input",
             str(workdir / "normalized.json"),
+            "--graph-context-input",
+            str(workdir / "graphify-out" / "graph_context.json"),
             "--question",
             "그래서 내가 뭘 해야 하나",
             "--output",
@@ -431,6 +462,7 @@ def main() -> int:
         "merged-expanded.json",
         "preferred-spaces.json",
         "normalized.json",
+        "graphify-out/graph_context.json",
         "clusters.json",
         "evidence-manifest.json",
         "insights.json",

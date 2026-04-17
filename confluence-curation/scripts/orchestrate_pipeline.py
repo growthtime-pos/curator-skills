@@ -24,6 +24,7 @@ from pipeline_registry import (
 STAGE_LABELS = {
     "stage0_pre_analysis": "pre_analysis",
     "stage1_extract": "extract",
+    "stage1_graphify": "graphify",
     "stage2_cluster": "cluster",
     "stage3_analyze": "analyze",
     "stage4_synthesize": "synthesize",
@@ -64,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-interactive", action="store_true", help="질문 없이 default method 사용")
     parser.add_argument("--pre-analysis-method")
     parser.add_argument("--extract-method")
+    parser.add_argument("--graphify-method")
     parser.add_argument("--cluster-method")
     parser.add_argument("--analyze-method")
     parser.add_argument("--synthesize-method")
@@ -104,6 +106,7 @@ def stage_method_overrides(args: argparse.Namespace) -> Dict[str, Optional[str]]
     return {
         "stage0_pre_analysis": args.pre_analysis_method,
         "stage1_extract": args.extract_method,
+        "stage1_graphify": args.graphify_method,
         "stage2_cluster": args.cluster_method,
         "stage3_analyze": args.analyze_method,
         "stage4_synthesize": args.synthesize_method,
@@ -171,6 +174,12 @@ def artifact_paths(args: argparse.Namespace) -> Dict[str, str]:
         "preferred_spaces": os.path.join(output_dir, "preferred-spaces.json"),
         "expanded": os.path.join(output_dir, "merged-expanded.json"),
         "normalized": os.path.join(output_dir, "normalized.json"),
+        "graphify_corpus": os.path.join(output_dir, "graphify-corpus"),
+        "graphify_out_dir": os.path.join(output_dir, "graphify-out"),
+        "graphify_context": os.path.join(output_dir, "graphify-out", "graph_context.json"),
+        "graphify_graph": os.path.join(output_dir, "graphify-out", "graph.json"),
+        "graphify_report": os.path.join(output_dir, "graphify-out", "GRAPH_REPORT.md"),
+        "graphify_html": os.path.join(output_dir, "graphify-out", "graph.html"),
         "clusters": os.path.join(output_dir, "clusters.json"),
         "evidence_dir": os.path.join(output_dir, "evidence"),
         "evidence_manifest": os.path.join(output_dir, "evidence-manifest.json"),
@@ -311,6 +320,7 @@ def build_plan(
         "selected_methods": {
             "stage0_pre_analysis": selected_methods["stage0_pre_analysis"],
             "stage1_extract": selected_methods["stage1_extract"],
+            "stage1_graphify": selected_methods["stage1_graphify"],
             "stage2_cluster": selected_methods["stage2_cluster"],
             "stage3_analyze": selected_methods["stage3_analyze"],
             "stage4_synthesize": selected_methods["stage4_synthesize"],
@@ -504,6 +514,44 @@ def normalize_with_method(method: str, input_path: str, output_path: str, root: 
     run_step(command, root)
 
 
+def run_graphify_stage(method: str, artifacts: Dict[str, str], root: Path) -> None:
+    if method == "disabled":
+        write_json(
+            artifacts["graphify_context"],
+            {
+                "meta": {
+                    "generated_at": iso_now(),
+                    "graphify_available": False,
+                    "reason": "graphify stage disabled",
+                },
+                "stats": {"node_count": 0, "edge_count": 0, "community_count": 0},
+                "communities": [],
+                "god_nodes": [],
+                "surprising_connections": [],
+                "suggested_questions": [],
+                "page_context": {},
+                "bridge_pages": [],
+                "warnings": ["graphify stage disabled"],
+            },
+        )
+        return
+
+    run_step(
+        [
+            sys.executable,
+            "confluence-curation/scripts/graphify_confluence.py",
+            "--normalized-input",
+            artifacts["normalized"],
+            "--corpus-dir",
+            artifacts["graphify_corpus"],
+            "--graphify-out-dir",
+            artifacts["graphify_out_dir"],
+            "--emit-html",
+        ],
+        root,
+    )
+
+
 def render_outputs(
     args: argparse.Namespace,
     artifacts: Dict[str, str],
@@ -568,6 +616,8 @@ def render_outputs(
                 artifacts["review"],
                 "--normalized-input",
                 artifacts["normalized"],
+                "--graph-context-input",
+                artifacts["graphify_context"],
                 "--question",
                 question,
                 "--output",
@@ -602,6 +652,12 @@ def main() -> int:
         write_json(artifacts["pipeline_plan"], plan)
         normalize_with_method(selected_methods["stage1_extract"], stage0_output, artifacts["normalized"], root)
         update_stage_status(plan, "stage1_extract", "completed")
+        write_json(artifacts["pipeline_plan"], plan)
+
+        update_stage_status(plan, "stage1_graphify", "in_progress")
+        write_json(artifacts["pipeline_plan"], plan)
+        run_graphify_stage(selected_methods["stage1_graphify"], artifacts, root)
+        update_stage_status(plan, "stage1_graphify", "completed")
         write_json(artifacts["pipeline_plan"], plan)
 
         update_stage_status(plan, "stage2_cluster", "in_progress")
@@ -660,6 +716,8 @@ def main() -> int:
                 args.purpose,
                 "--strategy",
                 selected_methods["stage4_synthesize"],
+                "--graph-context-input",
+                artifacts["graphify_context"],
             ],
             root,
         )

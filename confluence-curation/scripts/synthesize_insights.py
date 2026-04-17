@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-snippets", type=int, default=3)
     parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
     parser.add_argument("--strategy", default="balanced-synthesis", choices=sorted(SYNTHESIS_STRATEGIES))
+    parser.add_argument("--graph-context-input", help="Optional graphify graph_context.json")
     return parser.parse_args()
 
 
@@ -50,6 +51,57 @@ def summarize_candidate(candidate: Optional[Dict[str, Any]]) -> Optional[Dict[st
         "freshness_score": candidate.get("freshness_score"),
         "trust_score": candidate.get("trust_score"),
         "keywords": candidate.get("keywords", []),
+    }
+
+
+def related_page_ids(pack: Dict[str, Any]) -> List[str]:
+    page_ids: List[str] = []
+    for candidate_key in ["current_candidate", "trusted_candidate", "stale_candidate"]:
+        candidate = pack.get(candidate_key) or {}
+        page_id = candidate.get("page_id")
+        if page_id and page_id not in page_ids:
+            page_ids.append(page_id)
+    for snippet in pack.get("evidence_snippets", []):
+        page_id = snippet.get("page_id")
+        if page_id and page_id not in page_ids:
+            page_ids.append(page_id)
+    return page_ids
+
+
+def build_graph_context_summary(pack: Dict[str, Any], graph_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not graph_context or not ((graph_context.get("meta") or {}).get("graphify_available")):
+        return {}
+
+    page_context = graph_context.get("page_context", {})
+    communities: List[str] = []
+    bridge_pages: List[Dict[str, Any]] = []
+    for page_id in related_page_ids(pack):
+        context = page_context.get(page_id) or {}
+        community = context.get("community_label")
+        if community and community not in communities:
+            communities.append(community)
+        if context.get("degree"):
+            bridge_pages.append(
+                {
+                    "page_id": page_id,
+                    "label": context.get("label") or page_id,
+                    "degree": context.get("degree"),
+                    "community_label": community,
+                }
+            )
+
+    questions: List[str] = []
+    for item in graph_context.get("suggested_questions", [])[:5]:
+        if isinstance(item, str):
+            questions.append(item)
+        elif item.get("question"):
+            questions.append(item["question"])
+
+    bridge_pages.sort(key=lambda item: (item.get("degree", 0), item.get("label") or ""), reverse=True)
+    return {
+        "communities": communities[:3],
+        "bridge_pages": bridge_pages[:3],
+        "suggested_questions": questions[:3],
     }
 
 
@@ -236,8 +288,15 @@ def synthesize_topic(
     max_snippets: int,
     purpose: str = "general",
     strategy: str = "balanced-synthesis",
+    graph_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     conclusion = derive_conclusion(pack, purpose, strategy)
+    graph_summary = build_graph_context_summary(pack, graph_context)
+    if graph_summary.get("communities"):
+        conclusion = (
+            f"{conclusion} "
+            f"Graph 관점에서는 `{', '.join(graph_summary['communities'])}` 커뮤니티와 강하게 연결됩니다."
+        )
     confidence = calibrate_confidence(pack)
     evidence_page_ids = sorted(
         {
@@ -273,6 +332,7 @@ def synthesize_topic(
         "evidence_page_ids": evidence_page_ids,
         "evidence_snippets": choose_evidence_snippets(pack, max_snippets),
         "warnings": pack.get("warnings", []),
+        "graph_context": graph_summary,
     }
 
 
@@ -295,6 +355,7 @@ def main() -> int:
     args = parse_args()
     manifest_payload = read_json(args.manifest)
     packs = manifest_payload.get("packs", [])
+    graph_context = read_json(args.graph_context_input) if args.graph_context_input and os.path.exists(args.graph_context_input) else None
 
     insights: List[Dict[str, Any]] = []
     warnings: List[str] = list(manifest_payload.get("warnings", []))
@@ -308,7 +369,16 @@ def main() -> int:
             max_snippets = min(max_snippets, 2)
         if args.strategy == "action-heavy-synthesis":
             args.max_actions = max(args.max_actions, 4)
-        insights.append(synthesize_topic(pack, args.max_actions, max_snippets, args.purpose, args.strategy))
+        insights.append(
+            synthesize_topic(
+                pack,
+                args.max_actions,
+                max_snippets,
+                args.purpose,
+                args.strategy,
+                graph_context,
+            )
+        )
 
     insights.sort(
         key=lambda item: (
