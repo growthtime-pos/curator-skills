@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--insights-input", required=True)
     parser.add_argument("--review-input", required=True)
     parser.add_argument("--normalized-input", required=True)
+    parser.add_argument("--graph-context-input")
     parser.add_argument("--question", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -86,6 +87,17 @@ def choose_best_insight(insights: List[Dict[str, Any]], question: str, mode: str
     return ranked[0] if ranked else {}
 
 
+def build_graph_summary(insight: Dict[str, Any], graph_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not graph_context or not ((graph_context.get("meta") or {}).get("graphify_available")):
+        return {}
+    graph_summary = insight.get("graph_context") or {}
+    return {
+        "communities": graph_summary.get("communities", [])[:3],
+        "bridge_pages": graph_summary.get("bridge_pages", [])[:3],
+        "suggested_questions": graph_summary.get("suggested_questions", [])[:3],
+    }
+
+
 def build_supporting_pages(insight: Dict[str, Any], page_lookup: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     pages: List[Dict[str, Any]] = []
     for key in ["current_reference", "background_reference", "stale_reference"]:
@@ -112,23 +124,30 @@ def build_supporting_pages(insight: Dict[str, Any], page_lookup: Dict[str, Dict[
     return deduped
 
 
-def build_best_explanation(insight: Dict[str, Any], mode: str) -> str:
+def build_best_explanation(insight: Dict[str, Any], mode: str, graph_summary: Optional[Dict[str, Any]] = None) -> str:
     label = insight.get("label") or "이 주제"
     if mode == "change":
         recent = (insight.get("recent_change_summary") or [None])[0]
-        return recent or f"{label} 관련 문서들은 최근 업데이트 흐름을 기준으로 다시 검토할 필요가 있습니다."
-    if mode == "action":
+        base = recent or f"{label} 관련 문서들은 최근 업데이트 흐름을 기준으로 다시 검토할 필요가 있습니다."
+    elif mode == "action":
         action = (insight.get("suggested_actions") or [None])[0]
-        return action or f"{label} 주제에서는 현재 기준 문서와 배경 문서를 나눠 확인한 뒤 정리 방향을 결정하는 것이 좋습니다."
-    snippet_groups = insight.get("evidence_snippets") or []
-    if snippet_groups:
-        snippets = snippet_groups[0].get("snippets", [])
-        if snippets:
-            return (
-                f"{label} 문맥에서 가장 직접적인 설명은 다음 근거에서 잡을 수 있습니다: "
-                + snippets[0]
-            )
-    return insight.get("conclusion") or f"{label} 주제는 관련 문서를 비교해 맥락을 함께 봐야 이해가 쉬운 상태입니다."
+        base = action or f"{label} 주제에서는 현재 기준 문서와 배경 문서를 나눠 확인한 뒤 정리 방향을 결정하는 것이 좋습니다."
+    else:
+        snippet_groups = insight.get("evidence_snippets") or []
+        if snippet_groups:
+            snippets = snippet_groups[0].get("snippets", [])
+            if snippets:
+                base = (
+                    f"{label} 문맥에서 가장 직접적인 설명은 다음 근거에서 잡을 수 있습니다: "
+                    + snippets[0]
+                )
+            else:
+                base = insight.get("conclusion") or f"{label} 주제는 관련 문서를 비교해 맥락을 함께 봐야 이해가 쉬운 상태입니다."
+        else:
+            base = insight.get("conclusion") or f"{label} 주제는 관련 문서를 비교해 맥락을 함께 봐야 이해가 쉬운 상태입니다."
+    if graph_summary and graph_summary.get("communities"):
+        return base + f" 이 주제는 graph 상에서 `{', '.join(graph_summary['communities'])}` 커뮤니티와 연결됩니다."
+    return base
 
 
 def build_question_interpretation(question: str, mode: str, insight: Dict[str, Any]) -> str:
@@ -145,9 +164,11 @@ def main() -> int:
     insights_payload = read_json(args.insights_input)
     review_payload = read_json(args.review_input)
     normalized_payload = read_json(args.normalized_input)
+    graph_context = read_json(args.graph_context_input) if args.graph_context_input and os.path.exists(args.graph_context_input) else None
 
     mode = infer_question_mode(args.question)
     best_insight = choose_best_insight(insights_payload.get("insights", []), args.question, mode)
+    graph_summary = build_graph_summary(best_insight, graph_context)
     page_lookup = {
         page.get("page_id"): page
         for page in normalized_payload.get("pages", [])
@@ -171,7 +192,7 @@ def main() -> int:
         },
         "question": args.question,
         "question_interpretation": build_question_interpretation(args.question, mode, best_insight),
-        "best_explanation_ko": build_best_explanation(best_insight, mode),
+        "best_explanation_ko": build_best_explanation(best_insight, mode, graph_summary),
         "supporting_pages": build_supporting_pages(best_insight, page_lookup),
         "supporting_snippets": best_insight.get("evidence_snippets", [])[:3],
         "conflicting_points": best_insight.get("conflict_notes", [])[:3],
@@ -180,6 +201,7 @@ def main() -> int:
             or [note for reviewer in review.get("reviewers", []) for note in reviewer.get("findings", [])[:1]][:3]
         ),
         "suggested_next_actions": best_insight.get("suggested_actions", [])[:3],
+        "graph_context_summary": graph_summary,
     }
     write_json(args.output, result)
     return 0

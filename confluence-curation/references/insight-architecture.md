@@ -25,12 +25,13 @@ The main idea to borrow is staged analysis with explicit intermediate outputs.
 2. infer-preferred-space
 3. preferred-space-expand
 4. normalize
-5. cluster
-6. evidence-pack
-7. synthesize
-8. review
-9. report
-10. follow-up answer
+5. graphify
+6. cluster
+7. evidence-pack
+8. synthesize
+9. review
+10. report
+11. follow-up answer
 
 Each stage should read a stable input artifact and write a stable output artifact.
 
@@ -96,7 +97,22 @@ Recommended normalized structures:
 Primary output:
 - `normalized.json`
 
-### 5. Cluster
+### 5. Graphify
+
+Source:
+- `scripts/graphify_confluence.py`
+
+Role:
+- turn normalized pages, people, and relationships into a graphify-compatible graph
+- surface communities, bridge pages, and suggested follow-up questions
+- keep a graph-backed summary artifact that later insight stages can consume
+
+Primary output:
+- `graphify-out/graph.json`
+- `graphify-out/GRAPH_REPORT.md`
+- `graphify-out/graph_context.json`
+
+### 6. Cluster
 
 Group pages by topic rather than by page ID alone.
 
@@ -119,7 +135,7 @@ Each cluster should include:
 - likely background page
 - confidence
 
-### 4. Evidence Pack
+### 7. Evidence Pack
 
 For each cluster, assemble the minimum evidence needed for synthesis.
 
@@ -136,7 +152,7 @@ Include:
 Primary output:
 - `evidence/topic_<id>.json`
 
-## 7. Synthesize
+## 8. Synthesize
 
 Generate topic-level insights, not just page rankings.
 
@@ -160,7 +176,7 @@ Each insight should carry:
 - warnings
 - suggested actions
 
-### 8. Review
+### 9. Review
 
 Run one or more second-pass reviewers over synthesized insights.
 
@@ -175,7 +191,7 @@ The review stage should challenge unsupported claims and reduce overconfidence.
 Primary output:
 - `review_notes.json`
 
-### 9. Report
+### 10. Report
 
 Render a final Korean report for human decision-makers.
 
@@ -194,7 +210,7 @@ Primary output:
 
 The first response should be readable as a briefing, not just a ranking report.
 
-### 10. Follow-Up Answer
+### 11. Follow-Up Answer
 
 Source:
 - `scripts/answer_followup.py`
@@ -234,7 +250,7 @@ The minimum useful insight workflow should be able to:
 
 ## Non-Goals For The First Iteration
 
-- heavy knowledge-graph infrastructure
+- heavy semantic knowledge-graph infrastructure beyond lightweight graphify summaries
 - full semantic diffing across all versions
 - perfect claim extraction
 - replacing human judgment with a single score
