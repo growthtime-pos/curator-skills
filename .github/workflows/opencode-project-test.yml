@@ -69,3 +69,11 @@ jobs:
             echo "See log: $LOG_FILE"
             exit 1
           }
+
+      - name: Upload opencode log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-project-test-log
+          path: ${{ runner.temp }}/opencode-project-test.log
+          if-no-files-found: warn
