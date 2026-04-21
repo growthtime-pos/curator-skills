@@ -1,0 +1,71 @@
+name: Opencode Project Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/opencode-project-test.yml"
+      - ".github/prompts/opencode-project-test.md"
+      - "AGENTS.md"
+      - "README.md"
+      - "confluence-curation/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/opencode-project-test.yml"
+      - ".github/prompts/opencode-project-test.md"
+      - "AGENTS.md"
+      - "README.md"
+      - "confluence-curation/**"
+
+concurrency:
+  group: opencode-project-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opencode-project-test:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify runner prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null 2>&1 || {
+            echo "python3 is required on the self-hosted runner."
+            exit 1
+          }
+          command -v opencode >/dev/null 2>&1 || {
+            echo "opencode is required on the self-hosted runner."
+            exit 1
+          }
+
+      - name: Run repository test flow through opencode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROMPT_FILE=".github/prompts/opencode-project-test.md"
+          PROMPT="$(cat "$PROMPT_FILE")"
+          LOG_FILE="$RUNNER_TEMP/opencode-project-test.log"
+
+          opencode_args=(run --dangerously-skip-permissions "$PROMPT")
+          if [ -n "${OPENCODE_MODEL:-}" ]; then
+            opencode_args=(run --model "$OPENCODE_MODEL" --dangerously-skip-permissions "$PROMPT")
+          fi
+
+          opencode "${opencode_args[@]}" | tee "$LOG_FILE"
+
+          grep -qx 'OPENCODE_TEST_STATUS: PASS' "$LOG_FILE" || {
+            echo "OpenCode did not emit the required PASS marker."
+            echo "See log: $LOG_FILE"
+            exit 1
+          }
