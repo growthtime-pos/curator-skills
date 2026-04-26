@@ -85,10 +85,11 @@ python3 confluence-curation/scripts/configure_confluence.py clear
 14. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
 15. If the user wants per-stage method selection, run `scripts/orchestrate_pipeline.py` and let it choose methods for `pre_analysis / extract / cluster / analyze / synthesize / validate`, then persist `pipeline_plan.json`.
 16. Otherwise run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
-17. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
-18. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
-19. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
-20. Call out ambiguity explicitly instead of hiding it.
+17. After `scripts/orchestrate_pipeline.py` completes in an interactive terminal, ask the built-in 4-question feedback prompt and tell the user where the JSONL record was saved. The default path is `<output-dir>/feedback/feedback.jsonl`. Use `--no-feedback` to skip it, or `--feedback-output <path>` to append somewhere else. `--non-interactive` never prompts.
+18. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
+19. Run `scripts/answer_followup.py` when the user asks a follow-up question about meaning, changes, or next actions.
+20. Use the appropriate purpose template from [references/purpose-registry.md](references/purpose-registry.md) to keep the output Korean and easy to scan. For `general` purpose, use [references/output-template.md](references/output-template.md).
+21. Call out ambiguity explicitly instead of hiding it.
 
 ## Staged Insight Workflow
 
@@ -138,6 +139,17 @@ Primary entry point:
 ```bash
 python3 confluence-curation/scripts/orchestrate_pipeline.py --fetch-input /tmp/confluence.json --output-dir /tmp/pipeline-run
 ```
+
+Post-run feedback:
+
+- interactive runs request 4 short answers after the pipeline succeeds: usefulness score, accuracy/trust score, whether anything was missing, and one optional free-text line
+- `--feedback-prompt` can force the same prompt in a non-TTY run unless `--non-interactive` is set
+- the prompt warns users not to paste passwords, tokens, personal sensitive information, or Confluence source text
+- feedback is appended as JSONL to `<output-dir>/feedback/feedback.jsonl` unless `--feedback-output <path>` is provided
+- `pipeline_result.json` records only `feedback_requested`, `feedback_recorded`, and `feedback_output`; it does not contain the feedback answers
+- stored feedback records include run/artifact metadata, selected stage methods, the 4 responses, and aggregate counts such as page, insight, and review count
+- stored feedback must not include Confluence body text, original user questions, or generated report body text
+- S3 upload is intentionally external to this repository; an internal collector may upload the JSONL to a key such as `s3://<bucket>/confluence-curation-feedback/dt=YYYY-MM-DD/feedback.jsonl`
 
 Reference:
 
