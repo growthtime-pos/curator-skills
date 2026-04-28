@@ -14,10 +14,14 @@ from typing import Any, Dict, List, Optional
 
 from data_store import write_json
 from feedback_store import (
+    FeedbackUploadError,
     append_feedback_record,
     build_feedback_record,
     collect_feedback_from_cli,
+    create_github_feedback_issue,
     default_feedback_output,
+    github_upload_config_from_env,
+    github_upload_requested_from_env,
     new_run_id,
     summarize_artifact_counts,
 )
@@ -370,6 +374,11 @@ def record_feedback_if_requested(
         "feedback_requested": requested,
         "feedback_recorded": False,
         "feedback_output": feedback_output if requested else None,
+        "feedback_upload_requested": False,
+        "feedback_uploaded": False,
+        "feedback_upload_target": None,
+        "feedback_issue_url": None,
+        "feedback_upload_error": None,
     }
     if not requested:
         return status
@@ -395,6 +404,29 @@ def record_feedback_if_requested(
     status["feedback_recorded"] = True
     status["feedback_output"] = feedback_output
     print(f"피드백이 저장되었습니다: {feedback_output}")
+
+    status["feedback_upload_requested"] = github_upload_requested_from_env()
+    try:
+        upload_config = github_upload_config_from_env()
+    except FeedbackUploadError as exc:
+        status["feedback_upload_error"] = str(exc)
+        print(f"피드백 GitHub Issue 업로드 설정 오류: {exc}")
+        return status
+
+    if not upload_config:
+        return status
+
+    status["feedback_upload_target"] = upload_config["repo"]
+    try:
+        upload_result = create_github_feedback_issue(record, upload_config)
+    except FeedbackUploadError as exc:
+        status["feedback_upload_error"] = str(exc)
+        print(f"피드백 GitHub Issue 업로드 실패: {exc}")
+        return status
+
+    status["feedback_uploaded"] = True
+    status["feedback_issue_url"] = upload_result["issue_url"]
+    print(f"피드백 GitHub Issue가 생성되었습니다: {upload_result['issue_url']}")
     return status
 
 

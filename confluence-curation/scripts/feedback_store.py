@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -11,6 +13,13 @@ from typing import Any, Dict, Optional
 SENSITIVE_INFORMATION_NOTICE = (
     "피드백에는 비밀번호, 토큰, 개인 민감정보, Confluence 원문을 붙여넣지 마세요."
 )
+GITHUB_BASE_URL_ENV = "CONFLUENCE_FEEDBACK_GITHUB_BASE_URL"
+GITHUB_REPO_ENV = "CONFLUENCE_FEEDBACK_GITHUB_REPO"
+GITHUB_TOKEN_ENV = "CONFLUENCE_FEEDBACK_GITHUB_TOKEN"
+
+
+class FeedbackUploadError(Exception):
+    """Raised when a feedback issue cannot be created."""
 
 
 def iso_now() -> str:
@@ -36,6 +45,123 @@ def append_feedback_record(path: str, record: Dict[str, Any]) -> str:
         json.dump(record, handle, ensure_ascii=False, sort_keys=True)
         handle.write("\n")
     return output_path
+
+
+def github_upload_config_from_env() -> Optional[Dict[str, str]]:
+    base_url = os.environ.get(GITHUB_BASE_URL_ENV, "").strip()
+    repo = os.environ.get(GITHUB_REPO_ENV, "").strip()
+    token = os.environ.get(GITHUB_TOKEN_ENV, "").strip()
+    if not (base_url and repo and token):
+        return None
+    if "/" not in repo or repo.startswith("/") or repo.endswith("/"):
+        raise FeedbackUploadError(f"{GITHUB_REPO_ENV} must be formatted as org/repo")
+    return {
+        "base_url": base_url,
+        "repo": repo,
+        "token": token,
+    }
+
+
+def github_upload_requested_from_env() -> bool:
+    return bool(
+        os.environ.get(GITHUB_BASE_URL_ENV, "").strip()
+        and os.environ.get(GITHUB_REPO_ENV, "").strip()
+        and os.environ.get(GITHUB_TOKEN_ENV, "").strip()
+    )
+
+
+def normalize_github_api_base(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/api/v3"):
+        return normalized
+    return f"{normalized}/api/v3"
+
+
+def feedback_issue_title(record: Dict[str, Any]) -> str:
+    return (
+        "[confluence-curation feedback] "
+        f"{record.get('purpose', 'general')} {record.get('created_at', '')}"
+    ).strip()
+
+
+def feedback_issue_body(record: Dict[str, Any]) -> str:
+    responses = record.get("responses", {})
+    summary_counts = record.get("summary_counts", {})
+    selected_methods = record.get("selected_methods", {})
+    record_json = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True)
+    return "\n".join(
+        [
+            "## Confluence Curation Feedback",
+            "",
+            f"- Feedback ID: `{record.get('feedback_id')}`",
+            f"- Run ID: `{record.get('run_id')}`",
+            f"- Created at: `{record.get('created_at')}`",
+            f"- Purpose: `{record.get('purpose')}`",
+            f"- Usefulness score: `{responses.get('usefulness_score')}`",
+            f"- Accuracy score: `{responses.get('accuracy_score')}`",
+            f"- Missing content: `{responses.get('missing_content')}`",
+            f"- Page count: `{summary_counts.get('page_count', 0)}`",
+            f"- Insight count: `{summary_counts.get('insight_count', 0)}`",
+            f"- Review count: `{summary_counts.get('review_count', 0)}`",
+            "",
+            "## Selected Methods",
+            "",
+            *[
+                f"- `{stage}`: `{method}`"
+                for stage, method in selected_methods.items()
+            ],
+            "",
+            "## Feedback Record",
+            "",
+            "```json",
+            record_json,
+            "```",
+            "",
+        ]
+    )
+
+
+def create_github_feedback_issue(
+    record: Dict[str, Any],
+    config: Dict[str, str],
+) -> Dict[str, str]:
+    api_base = normalize_github_api_base(config["base_url"])
+    endpoint = f"{api_base}/repos/{config['repo']}/issues"
+    payload = {
+        "title": feedback_issue_title(record),
+        "body": feedback_issue_body(record),
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {config['token']}",
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "confluence-curation-feedback",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        raise FeedbackUploadError(
+            f"GitHub issue upload failed: HTTP {exc.code} {detail}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise FeedbackUploadError(f"GitHub issue upload failed: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise FeedbackUploadError("GitHub issue upload failed: invalid JSON response") from exc
+
+    issue_url = response_payload.get("html_url") or response_payload.get("url")
+    if not issue_url:
+        raise FeedbackUploadError("GitHub issue upload failed: missing issue URL")
+    return {
+        "issue_url": issue_url,
+        "target": config["repo"],
+    }
 
 
 def prompt_rating(label: str) -> int:
