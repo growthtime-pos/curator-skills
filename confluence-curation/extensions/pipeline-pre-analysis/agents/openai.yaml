@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Pre-analysis
+short_description: 초기 fetch 결과를 해석해 preferred space와 확장 여부를 결정합니다.
+default_prompt: 초기 fetch artifact를 보고 preferred space를 추론하고, 필요한 경우 관련 페이지 확장까지 연결해. 선택한 method가 infer-only인지 infer-expand인지 분명히 하고, downstream에서 사용할 merged-expanded artifact를 남겨.

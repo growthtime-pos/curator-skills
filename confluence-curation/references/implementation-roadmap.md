@@ -15,12 +15,27 @@ Deliverables:
 - review rubric
 - updated skill and prompt wording
 - updated output template for topic-level insight sections
+- briefing-oriented summary contract
 
 Success criteria:
 - current users can still run the old workflow
 - future contributors understand the staged direction clearly
 
-## Phase 2: Add Normalization
+## Phase 2: Add Preferred Space Inference And Expansion
+
+Objective:
+- infer trusted or context-rich spaces from the first-pass search result
+- expand related pages without asking the user to enumerate spaces manually
+
+Suggested scripts:
+- `scripts/infer_preferred_spaces.py`
+- `scripts/expand_preferred_space.py`
+
+Success criteria:
+- the system can choose preferred spaces from evidence in the initial result
+- expanded pages carry reasons and remain explainable downstream
+
+## Phase 3: Add Normalization
 
 Objective:
 - create a stable analysis-friendly schema between fetch and curation
@@ -39,7 +54,7 @@ Primary output:
 Success criteria:
 - downstream stages no longer depend directly on raw fetch shape
 
-## Phase 3: Add Topic Clustering
+## Phase 4: Add Topic Clustering
 
 Objective:
 - group related pages into comparable topic clusters
@@ -60,7 +75,7 @@ Primary output:
 Success criteria:
 - overlapping documents are grouped well enough for human review
 
-## Phase 4: Add Evidence Packs
+## Phase 5: Add Evidence Packs
 
 Objective:
 - build compact evidence bundles for each topic
@@ -83,7 +98,7 @@ Primary output:
 Success criteria:
 - synthesis can run on compact topic inputs instead of the whole corpus
 
-## Phase 5: Add Insight Synthesis
+## Phase 6: Add Insight Synthesis
 
 Objective:
 - generate topic-level conclusions and recommended actions
@@ -103,7 +118,7 @@ Primary output:
 Success criteria:
 - each cluster yields a concise evidence-backed insight summary
 
-## Phase 6: Add Review Passes
+## Phase 7: Add Review Passes
 
 Objective:
 - challenge overconfident or weakly supported conclusions
@@ -123,7 +138,7 @@ Primary output:
 Success criteria:
 - final report confidence is better calibrated than first-pass synthesis
 
-## Phase 7: Upgrade Final Reporting
+## Phase 8: Upgrade Final Reporting
 
 Objective:
 - extend the final markdown output from page ranking to decision support
@@ -131,6 +146,7 @@ Objective:
 Possible approach:
 - extend `scripts/curate_confluence.py`
 - or add a dedicated `scripts/render_report.py`
+- add `scripts/render_insight_brief.py` for first-response briefing output
 
 Recommended sections:
 - overall summary
@@ -143,6 +159,18 @@ Recommended sections:
 
 Success criteria:
 - a team lead can use the report directly in documentation cleanup or operating review
+
+## Phase 9: Add Follow-Up Answers
+
+Objective:
+- let the same artifacts answer "what changed", "what does this mean", and "what should I do next"
+
+Suggested script:
+- `scripts/answer_followup.py`
+
+Success criteria:
+- follow-up answers cite topic-level evidence
+- answers explicitly separate explanation, conflicts, verification points, and next actions
 
 ## Validation Strategy
 

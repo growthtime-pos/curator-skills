@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Cluster Stage
+short_description: normalized corpus를 topic cluster로 묶는 방법론을 선택하고 실행합니다.
+default_prompt: cluster stage에서는 requested method에 맞춰 cluster_confluence.py의 strategy를 선택해 실행해. 왜 해당 클러스터링 편향을 택했는지 한 줄로 명시하고, output cluster artifact가 downstream evidence extraction에 바로 쓰이도록 유지해.

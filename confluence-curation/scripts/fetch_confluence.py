@@ -12,54 +12,43 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib import error, parse, request
+
+from confluence_config import config_str, detect_deployment_type, resolve_saved_config
+from data_store import default_data_dir, persist_feature_state, read_json_if_exists, write_json
 
 
 MAX_RPS = 1.0
 VERSION_LIMIT = 5
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
-DEFAULT_CONFIG_PATH = os.path.expanduser("~/.confluence-curation.json")
 
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
-def load_saved_config(path: str) -> Dict[str, Any]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _config_str(config: Dict[str, Any], key: str, env_key: Optional[str] = None) -> Optional[str]:
-    if env_key:
-        env_val = os.getenv(env_key)
-        if env_val:
-            return env_val
-    return config.get(key)
-
-
 def parse_args() -> argparse.Namespace:
-    config_path = os.getenv("CONFLUENCE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-    config = load_saved_config(config_path)
+    config_override = os.getenv("CONFLUENCE_CONFIG_PATH")
+    resolved_config = resolve_saved_config(
+        explicit_path=config_override,
+        explicit_source="env_path",
+    )
+    config = resolved_config.config
 
     parser = argparse.ArgumentParser(description="Fetch Confluence pages and profile hints.")
-    parser.add_argument("--base-url", default=_config_str(config, "base_url", "CONFLUENCE_BASE_URL"))
+    parser.add_argument("--base-url", default=config_str(config, "base_url", "CONFLUENCE_BASE_URL"))
     parser.add_argument(
         "--deployment-type",
         default=os.getenv("CONFLUENCE_DEPLOYMENT_TYPE") or config.get("deployment_type", "auto"),
         choices=["auto", "cloud", "server", "datacenter"],
     )
-    parser.add_argument("--email", default=_config_str(config, "email", "CONFLUENCE_EMAIL"))
-    parser.add_argument("--username", default=_config_str(config, "username", "CONFLUENCE_USERNAME"))
-    parser.add_argument("--api-token", default=_config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
-    parser.add_argument("--password", default=_config_str(config, "password", "CONFLUENCE_PASSWORD"))
+    parser.add_argument("--email", default=config_str(config, "email", "CONFLUENCE_EMAIL"))
+    parser.add_argument("--username", default=config_str(config, "username", "CONFLUENCE_USERNAME"))
+    parser.add_argument("--api-token", default=config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
+    parser.add_argument("--password", default=config_str(config, "password", "CONFLUENCE_PASSWORD"))
     parser.add_argument("--space-key")
     parser.add_argument("--root-page-id")
     parser.add_argument("--all-spaces", action="store_true", help="Search across all accessible spaces.")
@@ -81,6 +70,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory used to persist fetched results for reuse.",
     )
     parser.add_argument(
+        "--data-dir",
+        default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir(),
+        help="Directory used to persist reusable page snapshots and pipeline artifacts.",
+    )
+    parser.add_argument(
         "--cache-ttl-hours",
         type=int,
         default=int(os.getenv("CONFLUENCE_CACHE_TTL_HOURS") or config.get("cache_ttl_hours", 24)),
@@ -95,11 +89,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    args._config_path = config_path
-    args._config_used = bool(config)
+    args._config_path = resolved_config.path
+    args._config_source = resolved_config.source
+    args._config_used = resolved_config.found
+    args._config_load_error = resolved_config.load_error
 
     if not args.base_url:
-        parser.error("--base-url or CONFLUENCE_BASE_URL is required (또는 configure_confluence.py 로 설정)")
+        config_hint = args._config_path or "canonical/legacy 설정 파일 없음"
+        if args._config_load_error:
+            parser.error(
+                "--base-url or CONFLUENCE_BASE_URL is required. "
+                f"설정 파일을 읽지 못했습니다 ({config_hint}): {args._config_load_error}"
+            )
+        parser.error(
+            "--base-url or CONFLUENCE_BASE_URL is required "
+            f"(또는 configure_confluence.py 로 설정, 확인한 설정 소스={args._config_source}, 경로={config_hint})"
+        )
     if not args.space_key and not args.root_page_id and not args.all_spaces:
         parser.error("--space-key, --root-page-id, or --all-spaces is required")
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > MAX_RPS:
@@ -134,16 +139,6 @@ class AuthConfig:
 def _basic_auth_header(username: str, secret: str) -> str:
     token = base64.b64encode(f"{username}:{secret}".encode("utf-8")).decode("ascii")
     return f"Basic {token}"
-
-
-def detect_deployment_type(base_url: str, requested: str) -> str:
-    if requested != "auto":
-        return requested
-    parsed = parse.urlparse(base_url)
-    host = (parsed.netloc or "").lower()
-    if "atlassian.net" in host:
-        return "cloud"
-    return "server"
 
 
 class ConfluenceClient:
@@ -322,14 +317,210 @@ def strip_html(value: Optional[str]) -> Optional[str]:
     return text[:4000] if text else None
 
 
+def body_hash(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
 def title_key(title: str) -> str:
     return re.sub(r"[^a-z0-9가-힣]+", "", title.lower())
 
 
 def similarity(a: str, b: str) -> float:
-    from difflib import SequenceMatcher
-
     return SequenceMatcher(None, title_key(a), title_key(b)).ratio()
+
+
+def page_snapshot_dir(data_dir: str, page_id: str) -> str:
+    return os.path.join(data_dir, "pages", str(page_id))
+
+
+def latest_snapshot_path(data_dir: str, page_id: str) -> str:
+    return os.path.join(page_snapshot_dir(data_dir, page_id), "latest.json")
+
+
+def history_snapshot_path(data_dir: str, page_id: str, fetched_at: str, version_number: Optional[int]) -> str:
+    stamp = fetched_at.replace(":", "").replace("-", "").replace("+", "_")
+    version_label = f"v{version_number}" if version_number is not None else "vunknown"
+    return os.path.join(page_snapshot_dir(data_dir, page_id), "history", f"{stamp}_{version_label}.json")
+
+
+def run_artifact_path(data_dir: str, fetched_at: str) -> str:
+    stamp = fetched_at.replace(":", "").replace("-", "").replace("+", "_")
+    return os.path.join(data_dir, "runs", f"fetch_{stamp}.json")
+
+
+def page_change_summary(current: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not previous:
+        return {
+            "has_reference": False,
+            "changed": True,
+            "change_type": "new",
+            "importance": "high",
+            "importance_score": 16,
+            "previous_updated_at": None,
+            "current_updated_at": current.get("updated_at"),
+            "previous_version_number": None,
+            "current_version_number": current.get("version_number"),
+            "changed_fields": ["new_page"],
+            "body_similarity": None,
+            "summary_ko": "저장된 기준본이 없어 새 문서로 취급합니다.",
+        }
+
+    previous_body = previous.get("body_excerpt") or ""
+    current_body = current.get("body_excerpt") or ""
+    similarity_score = SequenceMatcher(None, previous_body, current_body).ratio() if previous_body or current_body else 1.0
+    changed_fields: List[str] = []
+
+    if previous.get("title") != current.get("title"):
+        changed_fields.append("title")
+    if previous.get("updated_at") != current.get("updated_at"):
+        changed_fields.append("updated_at")
+    if previous.get("version_number") != current.get("version_number"):
+        changed_fields.append("version_number")
+    if previous.get("body_hash") != current.get("body_hash"):
+        changed_fields.append("body_excerpt")
+    if previous.get("last_updated_by_account_id") != current.get("last_updated_by_account_id"):
+        changed_fields.append("last_updated_by_account_id")
+
+    if not changed_fields:
+        return {
+            "has_reference": True,
+            "changed": False,
+            "change_type": "unchanged",
+            "importance": "background",
+            "importance_score": 3,
+            "previous_updated_at": previous.get("updated_at"),
+            "current_updated_at": current.get("updated_at"),
+            "previous_version_number": previous.get("version_number"),
+            "current_version_number": current.get("version_number"),
+            "changed_fields": [],
+            "body_similarity": round(similarity_score, 3),
+            "summary_ko": "저장된 기준본 대비 의미 있는 변경이 확인되지 않았습니다.",
+        }
+
+    version_gap = (current.get("version_number") or 0) - (previous.get("version_number") or 0)
+    major_change = "body_excerpt" in changed_fields and similarity_score < 0.88
+    if major_change or version_gap >= 2:
+        importance = "high"
+        importance_score = 18
+    elif "updated_at" in changed_fields or "version_number" in changed_fields:
+        importance = "medium"
+        importance_score = 11
+    else:
+        importance = "low"
+        importance_score = 6
+
+    changes_ko: List[str] = []
+    if "title" in changed_fields:
+        changes_ko.append("제목 변경")
+    if "updated_at" in changed_fields:
+        changes_ko.append("갱신 시각 변경")
+    if "version_number" in changed_fields:
+        changes_ko.append("버전 증가")
+    if "body_excerpt" in changed_fields:
+        changes_ko.append("본문 내용 변경")
+    if "last_updated_by_account_id" in changed_fields:
+        changes_ko.append("최근 수정자 변경")
+
+    return {
+        "has_reference": True,
+        "changed": True,
+        "change_type": "updated",
+        "importance": importance,
+        "importance_score": importance_score,
+        "previous_updated_at": previous.get("updated_at"),
+        "current_updated_at": current.get("updated_at"),
+        "previous_version_number": previous.get("version_number"),
+        "current_version_number": current.get("version_number"),
+        "changed_fields": changed_fields,
+        "body_similarity": round(similarity_score, 3),
+        "summary_ko": "저장된 기준본 대비 " + ", ".join(changes_ko) + " 이 확인되었습니다.",
+    }
+
+
+def persist_data_artifacts(
+    data_dir: str,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    fetched_at = ((result.get("meta") or {}).get("fetched_at")) or iso_now()
+    pages = result.get("pages", [])
+    snapshot_stats = {
+        "page_count": len(pages),
+        "new_page_count": 0,
+        "updated_page_count": 0,
+        "unchanged_page_count": 0,
+    }
+
+    for page in pages:
+        page_id = str(page.get("page_id") or "")
+        if not page_id:
+            continue
+        previous_payload = load_json_if_exists(latest_snapshot_path(data_dir, page_id))
+        previous = (previous_payload or {}).get("page")
+        page["body_hash"] = body_hash(page.get("body_excerpt"))
+        change = page_change_summary(page, previous)
+        page["reference_snapshot"] = {
+            "data_dir": os.path.abspath(data_dir),
+            "latest_snapshot_path": os.path.abspath(latest_snapshot_path(data_dir, page_id)),
+            "has_reference": change["has_reference"],
+        }
+        page["change_summary"] = change
+
+        if change["change_type"] == "new":
+            snapshot_stats["new_page_count"] += 1
+        elif change["changed"]:
+            snapshot_stats["updated_page_count"] += 1
+        else:
+            snapshot_stats["unchanged_page_count"] += 1
+
+        snapshot_payload = {
+            "meta": {
+                "saved_at": iso_now(),
+                "fetched_at": fetched_at,
+                "page_id": page_id,
+                "data_dir": os.path.abspath(data_dir),
+            },
+            "page": page,
+        }
+        write_json(latest_snapshot_path(data_dir, page_id), snapshot_payload)
+        write_json(
+            history_snapshot_path(data_dir, page_id, fetched_at, page.get("version_number")),
+            snapshot_payload,
+        )
+
+    run_payload = dict(result)
+    run_path = run_artifact_path(data_dir, fetched_at)
+    write_json(run_path, run_payload)
+    feature_paths = persist_feature_state(
+        data_dir,
+        "fetch-confluence",
+        {
+            "meta": {
+                "generated_at": fetched_at,
+                "page_count": len(pages),
+                "new_page_count": snapshot_stats["new_page_count"],
+                "updated_page_count": snapshot_stats["updated_page_count"],
+                "unchanged_page_count": snapshot_stats["unchanged_page_count"],
+            },
+            "scope": ((result.get("meta") or {}).get("scope", {})),
+            "cache": ((result.get("meta") or {}).get("cache", {})),
+            "data_artifacts": {
+                "run_artifact_path": os.path.abspath(run_path),
+                **snapshot_stats,
+            },
+        },
+        generated_at=fetched_at,
+    )
+    result.setdefault("meta", {})
+    result["meta"]["data_artifacts"] = {
+        "used": True,
+        "data_dir": os.path.abspath(data_dir),
+        "run_artifact_path": os.path.abspath(run_path),
+        "feature_latest_path": feature_paths["latest_path"],
+        **snapshot_stats,
+    }
+    return result
 
 
 def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List[Dict[str, Any]]:
@@ -648,12 +839,18 @@ def main() -> int:
         cached = load_cached_result(cache_path, args.cache_ttl_hours)
         if cached:
             cached.setdefault("meta", {})
+            cached["meta"]["config"] = {
+                "source": args._config_source,
+                "path": args._config_path,
+                "found": args._config_used,
+            }
             cached["meta"]["cache"] = {
                 "used": True,
                 "cache_key": cache_key,
                 "cache_path": cache_path,
                 "cache_ttl_hours": args.cache_ttl_hours,
             }
+            cached = persist_data_artifacts(args.data_dir, cached)
             os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
             with open(args.output, "w", encoding="utf-8") as handle:
                 json.dump(cached, handle, ensure_ascii=False, indent=2)
@@ -687,6 +884,11 @@ def main() -> int:
             "base_url": args.base_url.rstrip("/"),
             "deployment_type": deployment_type,
             "auth_used": auth.auth_used,
+            "config": {
+                "source": args._config_source,
+                "path": args._config_path,
+                "found": args._config_used,
+            },
             "rate_limit_rps": args.rate_limit_rps,
             "scope": {
                 "space_key": args.space_key,
@@ -711,6 +913,7 @@ def main() -> int:
     }
 
     save_cached_result(cache_path, result)
+    result = persist_data_artifacts(args.data_dir, result)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as handle:
         json.dump(result, handle, ensure_ascii=False, indent=2)

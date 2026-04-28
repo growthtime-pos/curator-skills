@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Synthesize Stage
+short_description: evidence pack을 결론, 공백, 액션 중심 인사이트로 압축합니다.
+default_prompt: synthesize stage에서는 목적과 선택한 method를 반영해 evidence pack을 conclusion/action 중심 인사이트로 압축해. 한국어 출력, 근거 페이지 연결, evidence gap 유지 규칙은 깨지지 않게 하고, strategy에 따라 브리핑형 또는 action-heavy 편향을 반영해.

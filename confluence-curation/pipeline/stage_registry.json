@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "stages": [
+    {
+      "id": "stage0_pre_analysis",
+      "label": "Pre-analysis",
+      "mode": "skill",
+      "selection_prompt": "초기 fetch 결과를 어떻게 해석하고 확장할지 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "infer-expand",
+        "change-tracking": "infer-expand",
+        "onboarding": "infer-only"
+      },
+      "methods": [
+        {
+          "id": "infer-expand",
+          "label": "Preferred-space infer + expand",
+          "runner_kind": "skill",
+          "description": "preferred space를 추론하고 관련 페이지를 확장 수집합니다."
+        },
+        {
+          "id": "infer-only",
+          "label": "Preferred-space infer only",
+          "runner_kind": "skill",
+          "description": "preferred space만 추론하고 실제 확장 fetch는 하지 않습니다."
+        },
+        {
+          "id": "disabled",
+          "label": "No pre-analysis",
+          "runner_kind": "skill",
+          "description": "초기 raw fetch를 그대로 downstream에 전달합니다."
+        }
+      ]
+    },
+    {
+      "id": "stage1_extract",
+      "label": "Extract",
+      "mode": "tool",
+      "selection_prompt": "raw fetch 결과를 downstream 분석용 schema로 정규화하는 방식을 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "standard-extract",
+        "change-tracking": "standard-extract",
+        "onboarding": "dense-extract"
+      },
+      "methods": [
+        {
+          "id": "standard-extract",
+          "label": "Standard extract",
+          "runner_kind": "tool",
+          "description": "기본 sentence/keyword 밀도로 normalize합니다."
+        },
+        {
+          "id": "dense-extract",
+          "label": "Dense extract",
+          "runner_kind": "tool",
+          "description": "온보딩/설명용으로 더 많은 sentence와 keyword를 유지합니다."
+        }
+      ]
+    },
+    {
+      "id": "stage2_cluster",
+      "label": "Cluster",
+      "mode": "skill",
+      "selection_prompt": "주제 클러스터링 휴리스틱을 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "heuristic-cluster",
+        "change-tracking": "hierarchy-first-cluster",
+        "onboarding": "keyword-heavy-cluster"
+      },
+      "methods": [
+        {
+          "id": "heuristic-cluster",
+          "label": "Heuristic cluster",
+          "runner_kind": "skill",
+          "description": "현재 기본 title/keyword/contributor 균형형 클러스터링입니다."
+        },
+        {
+          "id": "keyword-heavy-cluster",
+          "label": "Keyword-heavy cluster",
+          "runner_kind": "skill",
+          "description": "본문/키워드 유사도를 더 강하게 반영합니다."
+        },
+        {
+          "id": "hierarchy-first-cluster",
+          "label": "Hierarchy-first cluster",
+          "runner_kind": "skill",
+          "description": "계층/링크 신호를 더 강하게 반영합니다."
+        }
+      ]
+    },
+    {
+      "id": "stage3_analyze",
+      "label": "Analyze",
+      "mode": "tool",
+      "selection_prompt": "클러스터를 evidence pack으로 바꾸는 분석 편향을 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "balanced-analysis",
+        "change-tracking": "change-first-analysis",
+        "onboarding": "trust-first-analysis"
+      },
+      "methods": [
+        {
+          "id": "balanced-analysis",
+          "label": "Balanced analysis",
+          "runner_kind": "tool",
+          "description": "현재/신뢰/오래된 후보를 균형형 점수로 계산합니다."
+        },
+        {
+          "id": "trust-first-analysis",
+          "label": "Trust-first analysis",
+          "runner_kind": "tool",
+          "description": "배경/정책 문서의 신뢰 신호를 더 강하게 반영합니다."
+        },
+        {
+          "id": "change-first-analysis",
+          "label": "Change-first analysis",
+          "runner_kind": "tool",
+          "description": "최근 변경량과 change summary를 더 강하게 반영합니다."
+        }
+      ]
+    },
+    {
+      "id": "stage4_synthesize",
+      "label": "Synthesize",
+      "mode": "skill",
+      "selection_prompt": "evidence pack을 결론/액션으로 압축하는 스타일을 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "balanced-synthesis",
+        "change-tracking": "action-heavy-synthesis",
+        "onboarding": "briefing-synthesis"
+      },
+      "methods": [
+        {
+          "id": "balanced-synthesis",
+          "label": "Balanced synthesis",
+          "runner_kind": "skill",
+          "description": "현재 기본 결론/공백/액션 균형형 synthesis입니다."
+        },
+        {
+          "id": "briefing-synthesis",
+          "label": "Briefing synthesis",
+          "runner_kind": "skill",
+          "description": "온보딩/브리핑 친화적으로 결론과 근거를 더 간결하게 압축합니다."
+        },
+        {
+          "id": "action-heavy-synthesis",
+          "label": "Action-heavy synthesis",
+          "runner_kind": "skill",
+          "description": "운영 조치와 follow-up action 생성을 더 강조합니다."
+        }
+      ]
+    },
+    {
+      "id": "stage5_validate",
+      "label": "Validate",
+      "mode": "skill",
+      "selection_prompt": "second-pass review 편향을 선택합니다.",
+      "default_method_by_purpose": {
+        "general": "balanced-validator",
+        "change-tracking": "strict-validator",
+        "onboarding": "executive-validator"
+      },
+      "methods": [
+        {
+          "id": "balanced-validator",
+          "label": "Balanced validator",
+          "runner_kind": "skill",
+          "description": "현재 기본 freshness/trust/contradiction/executive 리뷰를 균형형으로 적용합니다."
+        },
+        {
+          "id": "strict-validator",
+          "label": "Strict validator",
+          "runner_kind": "skill",
+          "description": "경고와 fail에 더 보수적으로 반응합니다."
+        },
+        {
+          "id": "freshness-validator",
+          "label": "Freshness validator",
+          "runner_kind": "skill",
+          "description": "최신성 신호를 더 강하게 반영합니다."
+        },
+        {
+          "id": "executive-validator",
+          "label": "Executive validator",
+          "runner_kind": "skill",
+          "description": "실행 가능성과 briefing 품질을 더 강하게 반영합니다."
+        }
+      ]
+    }
+  ]
+}

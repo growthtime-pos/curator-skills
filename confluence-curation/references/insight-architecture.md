@@ -22,12 +22,15 @@ The main idea to borrow is staged analysis with explicit intermediate outputs.
 ## Target Workflow
 
 1. fetch
-2. normalize
-3. cluster
-4. evidence-pack
-5. synthesize
-6. review
-7. report
+2. infer-preferred-space
+3. preferred-space-expand
+4. normalize
+5. cluster
+6. evidence-pack
+7. synthesize
+8. review
+9. report
+10. follow-up answer
 
 Each stage should read a stable input artifact and write a stable output artifact.
 
@@ -50,6 +53,36 @@ Primary output:
 
 ### 2. Normalize
 
+### 2. Infer Preferred Space
+
+Source:
+- `scripts/infer_preferred_spaces.py`
+
+Role:
+- inspect the initial fetch result
+- infer which spaces appear more trustworthy or more context-rich
+- choose a small set of preferred spaces without asking the user
+- emit reasons and candidate pages for internal expansion
+
+Primary output:
+- `preferred-spaces.json`
+
+### 3. Preferred Space Expand
+
+Source:
+- `scripts/expand_preferred_space.py`
+
+Role:
+- use the inferred preferred spaces as internal expansion targets
+- fetch related pages from those spaces
+- keep only meaningfully related pages
+- preserve discovery reasons for later ranking and explanation
+
+Primary output:
+- `preferred-space-expanded.json`
+
+### 4. Normalize
+
 Convert raw fetched data into a corpus designed for downstream analysis.
 
 Recommended normalized structures:
@@ -63,7 +96,7 @@ Recommended normalized structures:
 Primary output:
 - `normalized.json`
 
-### 3. Cluster
+### 5. Cluster
 
 Group pages by topic rather than by page ID alone.
 
@@ -103,7 +136,7 @@ Include:
 Primary output:
 - `evidence/topic_<id>.json`
 
-## 5. Synthesize
+## 7. Synthesize
 
 Generate topic-level insights, not just page rankings.
 
@@ -127,7 +160,7 @@ Each insight should carry:
 - warnings
 - suggested actions
 
-### 6. Review
+### 8. Review
 
 Run one or more second-pass reviewers over synthesized insights.
 
@@ -142,7 +175,7 @@ The review stage should challenge unsupported claims and reduce overconfidence.
 Primary output:
 - `review_notes.json`
 
-### 7. Report
+### 9. Report
 
 Render a final Korean report for human decision-makers.
 
@@ -158,6 +191,21 @@ Recommended sections:
 Primary output:
 - `report.md`
 - optional `summary.json`
+
+The first response should be readable as a briefing, not just a ranking report.
+
+### 10. Follow-Up Answer
+
+Source:
+- `scripts/answer_followup.py`
+
+Role:
+- interpret a user follow-up question against the saved artifacts
+- find the most relevant topic cluster and supporting pages
+- answer with explanation, evidence, uncertainty, and next actions
+
+Primary output:
+- `followup_answer.json`
 
 ## Artifact Layout
 

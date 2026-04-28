@@ -1,0 +1,4 @@
+version: 1
+display_name: Confluence Pipeline Orchestrator
+short_description: Confluence 큐레이션 파이프라인을 6개 stage로 나누고, stage별 method 선택과 artifact 실행 계획을 관리합니다.
+default_prompt: Confluence 큐레이션을 단계형 파이프라인으로 실행할 때는 먼저 stage registry를 읽고 purpose와 stage별 method를 정리해. interactive 선택이 가능하면 recommended method와 대안을 제시하고, 선택 결과를 pipeline_plan.json으로 저장한 뒤 orchestrate_pipeline.py를 사용해 각 stage runner를 순서대로 호출해. 최종적으로 report, brief, pipeline result artifact를 함께 남겨.

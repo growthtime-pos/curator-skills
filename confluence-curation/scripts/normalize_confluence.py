@@ -188,10 +188,13 @@ def normalize_pages(
                 "ancestors": page.get("ancestors", []),
                 "version_events": page.get("version_events", []),
                 "body_excerpt": body_excerpt,
+                "body_hash": page.get("body_hash"),
                 "sentences": sentences[:max_sentences],
                 "keywords": keywords,
                 "claim_candidates": claim_candidates,
                 "recent_contributors": recent_contributors,
+                "reference_snapshot": page.get("reference_snapshot", {}),
+                "change_summary": page.get("change_summary", {}),
                 "maintainer_signals": collect_maintainer_signals(recent_contributors, people_by_id),
                 "relationship_targets": relationship_index.get(page.get("page_id"), {}),
                 "signals": {
@@ -199,6 +202,8 @@ def normalize_pages(
                     "has_labels": bool(page.get("labels")),
                     "has_ancestors": bool(page.get("ancestors")),
                     "has_recent_contributors": bool(recent_contributors),
+                    "has_reference_snapshot": bool((page.get("reference_snapshot") or {}).get("has_reference")),
+                    "has_meaningful_change": bool((page.get("change_summary") or {}).get("changed")),
                 },
             }
         )

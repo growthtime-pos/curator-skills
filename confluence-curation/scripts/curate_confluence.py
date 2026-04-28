@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
+from data_store import default_data_dir, persist_feature_state
+
 
 STATUS_KO = {
     "fresh-and-trusted": "최신·신뢰 높음",
@@ -30,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--expansion-input")
+    parser.add_argument("--preferred-space-inference-input")
     parser.add_argument("--insights-input")
     parser.add_argument("--review-input")
     parser.add_argument("--top-n", type=int, default=20)
@@ -40,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--freshness-weight", type=float, default=40.0)
     parser.add_argument("--relationship-weight", type=float, default=25.0)
     parser.add_argument("--emit-json-summary")
+    parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
+    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
     return parser.parse_args()
 
 
@@ -176,6 +181,19 @@ def score_freshness(page: Dict[str, Any], strong_days: int, medium_days: int) ->
         evidence.append(f"최근 기여자 {contributor_count}명")
 
     return min(100, round(score)), evidence
+
+
+def score_change_signal(page: Dict[str, Any]) -> Tuple[int, List[str]]:
+    change = page.get("change_summary") or {}
+    if not change:
+        return 0, []
+    score = min(int(change.get("importance_score", 0) or 0), 18)
+    evidence: List[str] = []
+    if change.get("summary_ko"):
+        evidence.append(change["summary_ko"])
+    if change.get("has_reference") and not change.get("changed"):
+        evidence.append("저장된 기준본을 배경 참고로 함께 사용했습니다.")
+    return score, evidence[:2]
 
 
 def score_people(page: Dict[str, Any], people_by_id: Dict[str, Dict[str, Any]]) -> Tuple[float, List[str], bool]:
@@ -440,6 +458,7 @@ def build_review_lookup(review_payload: Optional[Dict[str, Any]]) -> Dict[str, D
 def build_topic_insight_lines(
     insights_payload: Optional[Dict[str, Any]],
     review_payload: Optional[Dict[str, Any]],
+    purpose: str = "general",
 ) -> List[str]:
     lines: List[str] = []
     if not insights_payload:
@@ -447,7 +466,14 @@ def build_topic_insight_lines(
 
     review_lookup = build_review_lookup(review_payload)
     insights = insights_payload.get("insights", [])
-    lines.append("## 주제별 인사이트")
+
+    if purpose == "change-tracking":
+        lines.append("## 주제별 변경 동향")
+    elif purpose == "onboarding":
+        lines.append("## 주제별 학습 가이드")
+    else:
+        lines.append("## 주제별 인사이트")
+
     if not insights:
         lines.append("- 생성된 주제별 인사이트가 없습니다.")
         lines.append("")
@@ -472,19 +498,42 @@ def build_topic_insight_lines(
         current = insight.get("current_reference") or {}
         background = insight.get("background_reference") or {}
         stale = insight.get("stale_reference") or {}
-        if current:
-            lines.append(f"- 현재 작업 기준 문서: `{current.get('title')}`")
-        if background and background.get("page_id") != current.get("page_id"):
-            lines.append(f"- 배경 참고 문서: `{background.get('title')}`")
-        if stale:
-            lines.append(f"- 오래된 참고 후보: `{stale.get('title')}`")
 
-        for note in (insight.get("conflict_notes") or [])[:2]:
-            lines.append(f"- 충돌 또는 중복 신호: {note}")
-        for change in (insight.get("recent_change_summary") or [])[:2]:
-            lines.append(f"- 최근 의미 있는 변화: {change}")
-        for action in (insight.get("suggested_actions") or [])[:2]:
-            lines.append(f"- 권장 후속 조치: {action}")
+        if purpose == "change-tracking":
+            # 변경 추적: 변경 내역 확장, 충돌 축소
+            for change in (insight.get("recent_change_summary") or [])[:8]:
+                lines.append(f"- 변경: {change}")
+            if current:
+                lines.append(f"- 가장 활발한 문서: `{current.get('title')}`")
+            for action in (insight.get("suggested_actions") or [])[:3]:
+                lines.append(f"- 후속 조치: {action}")
+
+        elif purpose == "onboarding":
+            # 온보딩: 읽기 순서 + 배경, 충돌 제거
+            if current:
+                lines.append(f"- 시작점 문서: `{current.get('title')}`")
+            if background and background.get("page_id") != current.get("page_id"):
+                lines.append(f"- 배경 읽기: `{background.get('title')}`")
+            if stale:
+                lines.append(f"- 역사적 맥락: `{stale.get('title')}`")
+            for action in (insight.get("suggested_actions") or [])[:3]:
+                lines.append(f"- 추천: {action}")
+
+        else:
+            # general (기존 로직)
+            if current:
+                lines.append(f"- 현재 작업 기준 문서: `{current.get('title')}`")
+            if background and background.get("page_id") != current.get("page_id"):
+                lines.append(f"- 배경 참고 문서: `{background.get('title')}`")
+            if stale:
+                lines.append(f"- 오래된 참고 후보: `{stale.get('title')}`")
+            for note in (insight.get("conflict_notes") or [])[:2]:
+                lines.append(f"- 충돌 또는 중복 신호: {note}")
+            for change in (insight.get("recent_change_summary") or [])[:2]:
+                lines.append(f"- 최근 의미 있는 변화: {change}")
+            for action in (insight.get("suggested_actions") or [])[:2]:
+                lines.append(f"- 권장 후속 조치: {action}")
+
         if insight.get("evidence_gaps"):
             lines.append(f"- 근거 공백: {insight['evidence_gaps'][0]}")
         if review and review.get("requires_follow_up"):
@@ -498,7 +547,7 @@ def build_topic_insight_lines(
     return lines
 
 
-def build_markdown(
+def build_markdown_general(
     meta: Dict[str, Any],
     pages: List[Dict[str, Any]],
     scored_pages: List[Dict[str, Any]],
@@ -517,6 +566,10 @@ def build_markdown(
     lines: List[str] = ["# Confluence 문서 큐레이션", ""]
     lines.append("## 요약")
     lines.extend(summarize_scope(meta, pages, warnings))
+    if meta.get("data_artifacts", {}).get("used"):
+        lines.append(
+            f"- 저장된 data 기준본을 함께 사용했고, 신규 {meta['data_artifacts'].get('new_page_count', 0)}개 / 갱신 {meta['data_artifacts'].get('updated_page_count', 0)}개 / 유지 {meta['data_artifacts'].get('unchanged_page_count', 0)}개를 반영했습니다."
+        )
     if best_current:
         lines.append(
             f"- 현재 작업 기준으로는 **{best_current['title']}** 가 가장 최신 후보로 보입니다."
@@ -533,7 +586,28 @@ def build_markdown(
         lines.append("- 선호 space 내부의 연관 문서를 추가 탐색해 검토 범위와 우선순위를 보강했습니다.")
     lines.append("")
 
-    topic_lines = build_topic_insight_lines(insights_payload, review_payload)
+    if insights_payload:
+        lines.append("## 지금 주목해야 할 주제")
+        topics = insights_payload.get("insights", [])[:5]
+        if topics:
+            for insight in topics:
+                why_now = (
+                    (insight.get("recent_change_summary") or [None])[0]
+                    or (insight.get("conflict_notes") or [None])[0]
+                    or insight.get("conclusion")
+                )
+                lines.append(f"- **{insight.get('label') or insight.get('topic_id')}**: {why_now}")
+        else:
+            lines.append("- 현재 시점에 별도로 부각할 주제가 충분하지 않습니다.")
+        lines.append("")
+
+    lines.append("## 우선 읽을 문서")
+    for item in scored_pages[:5]:
+        reason = (item.get("evidence") or ["우선순위 상위 문서입니다."])[0]
+        lines.append(f"- **{item['title']}**: {reason}")
+    lines.append("")
+
+    topic_lines = build_topic_insight_lines(insights_payload, review_payload, "general")
     if topic_lines:
         lines.extend(topic_lines)
 
@@ -560,19 +634,7 @@ def build_markdown(
         lines.append("- 본문 내용이 없거나 너무 짧아 신뢰 데이터 정리를 만들지 못했습니다.")
     lines.append("")
 
-    lines.append("## 문서 현황")
-    lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
-    for item in scored_pages:
-        team_title = item.get("people_summary") or "정보 부족"
-        updated_at = item.get("updated_at") or "-"
-        evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
-        authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
-        discovery = "; ".join(item.get("discovery_reasons", [])[:2]) or "키워드 검색"
-        lines.append(
-            f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
-        )
-    lines.append("")
+    lines.extend(build_document_table(scored_pages, "general"))
 
     lines.append("## 변경 흐름")
     if timeline:
@@ -610,16 +672,282 @@ def build_markdown(
     return "\n".join(lines)
 
 
+def build_markdown_change_tracking(
+    meta: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    scored_pages: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    timeline: List[Dict[str, Any]],
+    trusted_data: List[Dict[str, Any]],
+    synthesized_overview: List[str],
+    warnings: List[str],
+    insights_payload: Optional[Dict[str, Any]] = None,
+    review_payload: Optional[Dict[str, Any]] = None,
+) -> str:
+    lines: List[str] = ["# Confluence 변경 추적 리포트", ""]
+
+    # 1. 요약
+    lines.append("## 요약")
+    lines.extend(summarize_scope(meta, pages, warnings))
+    total_changes = sum(len(page.get("version_events", [])) for page in pages)
+    lines.append(f"- 검토 대상 문서에서 총 {total_changes}건의 버전 이벤트가 확인되었습니다.")
+    if warnings:
+        lines.append("- 일부 데이터는 API 제한으로 불완전할 수 있습니다.")
+    lines.append("")
+
+    # 2. 트렌드 신호
+    lines.append("## 트렌드 신호")
+    recently_created = [p for p in pages if days_ago(p.get("created_at")) is not None and days_ago(p.get("created_at")) <= 30]
+    frequently_updated = sorted(
+        scored_pages, key=lambda item: len(
+            (next((p for p in pages if p["page_id"] == item["page_id"]), {}) or {}).get("version_events", [])
+        ), reverse=True,
+    )[:5]
+    if recently_created:
+        lines.append(f"- 최근 30일 내 신규 생성 문서: {len(recently_created)}건")
+        for page in recently_created[:5]:
+            lines.append(f"  - `{page['title']}` ({(page.get('created_at') or '날짜 미상')[:10]} 생성)")
+    else:
+        lines.append("- 최근 30일 내 신규 생성 문서는 없습니다.")
+    if frequently_updated:
+        lines.append("- 업데이트 빈도 상위 문서 (수집된 버전 이력 기준, 최대 5건까지 수집):")
+        for item in frequently_updated:
+            source_page = next((p for p in pages if p["page_id"] == item["page_id"]), {})
+            event_count = len(source_page.get("version_events", []))
+            if event_count > 0:
+                capped = "5건+" if event_count >= 5 else f"{event_count}건"
+                lines.append(f"  - `{item['title']}`: {capped} 버전 이벤트")
+    lines.append("")
+
+    # 3. 주제별 변경 동향 (insights)
+    topic_lines = build_topic_insight_lines(insights_payload, review_payload, "change-tracking")
+    if topic_lines:
+        lines.extend(topic_lines)
+
+    # 4. 변경 타임라인 (확장)
+    lines.append("## 변경 타임라인")
+    if timeline:
+        for event in timeline[:30]:
+            lines.append(f"- {event['summary_ko']}")
+    else:
+        lines.append("- 확인 가능한 변경 흐름 정보가 충분하지 않습니다.")
+    lines.append("")
+
+    # 5. 변경 주체 분석
+    lines.append("## 변경 주체 분석")
+    contributor_pages: Dict[str, List[str]] = {}
+    for page in pages:
+        for contributor_id in page.get("recent_contributors", [])[:3]:
+            contributor_pages.setdefault(contributor_id, []).append(page["title"])
+    if contributor_pages:
+        sorted_contributors = sorted(contributor_pages.items(), key=lambda x: len(x[1]), reverse=True)
+        for contributor_id, page_titles in sorted_contributors[:10]:
+            lines.append(f"- `{contributor_id}`: {len(page_titles)}건 문서 관여 ({', '.join(page_titles[:3])})")
+    else:
+        lines.append("- 기여자 정보가 충분하지 않습니다.")
+    lines.append("")
+
+    # 6. 문서 현황 표 (변경 빈도 컬럼 포함)
+    lines.extend(build_document_table(scored_pages, "change-tracking", pages=pages))
+
+    # 7. 후속 확인 필요 항목
+    lines.append("## 후속 확인 필요 항목")
+    follow_ups: List[str] = []
+    if recently_created:
+        follow_ups.append("신규 생성 문서가 기존 문서와 중복되지 않는지 확인하세요.")
+    if total_changes > 20:
+        follow_ups.append("변경 활동이 활발하므로 주기적 모니터링을 권장합니다.")
+    if warnings:
+        follow_ups.append("데이터 수집 제약이 있었으므로 누락된 변경 사항이 있을 수 있습니다.")
+    if not follow_ups:
+        follow_ups.append("현재 기준으로 특별히 긴급한 후속 항목은 없습니다.")
+    for item in follow_ups:
+        lines.append(f"- {item}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_markdown_onboarding(
+    meta: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    scored_pages: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    timeline: List[Dict[str, Any]],
+    trusted_data: List[Dict[str, Any]],
+    synthesized_overview: List[str],
+    warnings: List[str],
+    insights_payload: Optional[Dict[str, Any]] = None,
+    review_payload: Optional[Dict[str, Any]] = None,
+) -> str:
+    lines: List[str] = ["# Confluence 온보딩 가이드", ""]
+
+    # 1. 주제 요약
+    lines.append("## 주제 요약")
+    lines.extend(summarize_scope(meta, pages, warnings))
+    if synthesized_overview:
+        for sentence in synthesized_overview[:5]:
+            lines.append(f"- {sentence}")
+    else:
+        lines.append("- 본문 내용이 충분히 수집되지 않아 주제 요약을 자동 생성하지 못했습니다.")
+    lines.append("")
+
+    # 2. 추천 읽기 순서
+    lines.append("## 추천 읽기 순서")
+    reading_order = sorted(
+        scored_pages,
+        key=lambda item: (item["trust_score"] + item["freshness_score"], item["trust_score"]),
+        reverse=True,
+    )
+    if reading_order:
+        for idx, item in enumerate(reading_order[:7], start=1):
+            reason_parts: List[str] = []
+            if item["freshness_score"] >= 70:
+                reason_parts.append("최신")
+            if item["trust_score"] >= 60:
+                reason_parts.append("신뢰도 높음")
+            if item.get("status_flag") == "fresh-and-trusted":
+                reason_parts.append("기준 문서 후보")
+            reason = ", ".join(reason_parts) if reason_parts else "관련 문서"
+            lines.append(f"{idx}. **{item['title']}** — {reason}")
+    else:
+        lines.append("- 읽기 순서를 추천할 만한 문서가 충분하지 않습니다.")
+    lines.append("")
+
+    # 3. 주제별 학습 가이드 (insights)
+    topic_lines = build_topic_insight_lines(insights_payload, review_payload, "onboarding")
+    if topic_lines:
+        lines.extend(topic_lines)
+
+    # 4. 핵심 내용 정리
+    lines.append("## 핵심 내용 정리")
+    if trusted_data:
+        for item in trusted_data:
+            lines.append(f"### {item['title']}")
+            for point in item["points"]:
+                lines.append(f"- {point}")
+    elif synthesized_overview:
+        for sentence in synthesized_overview:
+            lines.append(f"- {sentence}")
+    else:
+        lines.append("- 본문 내용이 충분하지 않아 핵심 내용을 정리하지 못했습니다.")
+    lines.append("")
+
+    # 5. 배경 문맥
+    lines.append("## 배경 문맥")
+    stale_pages = [item for item in scored_pages if item.get("status_flag") in ("trusted-but-stale", "needs-review")]
+    if stale_pages:
+        lines.append("- 아래 문서들은 오래되었지만 역사적 맥락을 파악하는 데 도움이 됩니다:")
+        for item in stale_pages[:5]:
+            lines.append(f"  - `{item['title']}` ({item.get('updated_at', '날짜 미상')[:10]})")
+    else:
+        lines.append("- 별도의 배경 문맥 문서는 식별되지 않았습니다.")
+    lines.append("")
+
+    # 6. 문서 맵
+    lines.append("## 문서 맵")
+    if clusters:
+        for cluster in clusters[:5]:
+            lines.append(f"### {cluster['label']}")
+            for page in cluster["pages"]:
+                lines.append(f"- `{page['title']}`")
+    else:
+        lines.append("- 문서 간 그룹 관계가 충분히 식별되지 않았습니다.")
+    lines.append("")
+
+    # 7. 추가 탐색 제안
+    lines.append("## 추가 탐색 제안")
+    space_keys = sorted({page.get("space_key") for page in pages if page.get("space_key")})
+    labels = sorted({label for page in pages for label in page.get("labels", [])})
+    if space_keys:
+        lines.append(f"- 관련 Space: {', '.join(space_keys[:5])}")
+    if labels:
+        lines.append(f"- 관련 Label: {', '.join(labels[:10])}")
+    if not space_keys and not labels:
+        lines.append("- 추가 탐색을 위한 Space 또는 Label 정보가 충분하지 않습니다.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_document_table(
+    scored_pages: List[Dict[str, Any]],
+    purpose: str = "general",
+    pages: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
+    lines: List[str] = []
+    if purpose == "change-tracking":
+        lines.append("## 문서 현황")
+        lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 최신성 | 변경 빈도 | 탐색 경로 | 판단 근거 |")
+        lines.append("|---|---|---|---|---|---|---|")
+        page_lookup = {p["page_id"]: p for p in (pages or [])}
+        for item in scored_pages:
+            updated_at = item.get("updated_at") or "-"
+            authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
+            evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
+            discovery = "; ".join(item.get("discovery_reasons", [])[:2]) or "키워드 검색"
+            source_page = page_lookup.get(item["page_id"], {})
+            event_count = len(source_page.get("version_events", []))
+            freq_label = ("5건+" if event_count >= 5 else f"{event_count}건") if event_count > 0 else "이력 없음"
+            lines.append(
+                f"| {item['title']} | {updated_at} | {authors} | {level_label(item['freshness_score'])} | {freq_label} | {discovery} | {evidence} |"
+            )
+    else:
+        lines.append("## 문서 현황")
+        lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        for item in scored_pages:
+            team_title = item.get("people_summary") or "정보 부족"
+            updated_at = item.get("updated_at") or "-"
+            evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
+            authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
+            discovery = "; ".join(item.get("discovery_reasons", [])[:2]) or "키워드 검색"
+            lines.append(
+                f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
+            )
+    lines.append("")
+    return lines
+
+
+def build_markdown(
+    meta: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    scored_pages: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    timeline: List[Dict[str, Any]],
+    trusted_data: List[Dict[str, Any]],
+    synthesized_overview: List[str],
+    warnings: List[str],
+    insights_payload: Optional[Dict[str, Any]] = None,
+    review_payload: Optional[Dict[str, Any]] = None,
+    purpose: str = "general",
+) -> str:
+    builder_args = (
+        meta, pages, scored_pages, clusters, timeline,
+        trusted_data, synthesized_overview, warnings,
+        insights_payload, review_payload,
+    )
+    if purpose == "change-tracking":
+        return build_markdown_change_tracking(*builder_args)
+    if purpose == "onboarding":
+        return build_markdown_onboarding(*builder_args)
+    return build_markdown_general(*builder_args)
+
+
 def main() -> int:
     args = parse_args()
     with open(args.input, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
     expansion_payload = read_json(args.expansion_input)
     payload = merge_expansion_payload(payload, expansion_payload)
+    preferred_space_inference_payload = read_json(args.preferred_space_inference_input)
     insights_payload = read_json(args.insights_input)
     review_payload = read_json(args.review_input)
 
     meta = payload.get("meta", {})
+    if preferred_space_inference_payload:
+        meta["inferred_preferred_spaces"] = preferred_space_inference_payload.get("preferred_spaces", [])
+        meta["preferred_space_inference"] = preferred_space_inference_payload
     pages = payload.get("pages", [])
     warnings = payload.get("warnings", [])
     relationships = payload.get("relationships", [])
@@ -628,9 +956,11 @@ def main() -> int:
 
     scored_pages: List[Dict[str, Any]] = []
     for page in pages:
-        freshness_score, freshness_evidence = score_freshness(
+        freshness_base, freshness_evidence = score_freshness(
             page, args.recent_days_strong, args.recent_days_medium
         )
+        change_score, change_evidence = score_change_signal(page)
+        freshness_score = min(100, freshness_base + change_score)
         people_score, people_evidence, missing_people = score_people(page, people_by_id)
         relationship_score, relationship_evidence, duplicate, superseded = score_relationships(
             page, relationships, page_lookup
@@ -649,7 +979,7 @@ def main() -> int:
             summary = " / ".join([bit for bit in bits if bit])
             if summary:
                 recent_people_summary.append(summary)
-        evidence = freshness_evidence + relationship_evidence + content_evidence
+        evidence = freshness_evidence + change_evidence + relationship_evidence + content_evidence
         if people_evidence:
             evidence.append("주요 기여자: " + "; ".join(people_evidence[:2]))
         risk_notes = []
@@ -675,6 +1005,7 @@ def main() -> int:
                 "recent_contributors": page.get("recent_contributors", []),
                 "people_summary": ", ".join(recent_people_summary) if recent_people_summary else "정보 부족",
                 "freshness_score": freshness_score,
+                "change_score": change_score,
                 "trust_score": trust_score,
                 "ranking_score": ranking_score,
                 "confidence_level": confidence,
@@ -685,13 +1016,40 @@ def main() -> int:
                 "discovery_reasons": page.get("discovery_reasons", []),
                 "preferred_space_match": bool(page.get("preferred_space_match")),
                 "preferred_space_boost": preferred_space_boost,
+                "topic_update_boost": 0,
             }
         )
+
+    cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
+    scored_page_lookup = {item["page_id"]: item for item in scored_pages}
+    for cluster in cluster_groups:
+        changed_candidates = []
+        for page in cluster:
+            item = scored_page_lookup.get(page.get("page_id"))
+            if not item:
+                continue
+            if item.get("change_score", 0) <= 0:
+                continue
+            updated_days = days_ago(page.get("updated_at"))
+            changed_candidates.append(
+                (
+                    item["change_score"],
+                    -(999999 if updated_days is None else updated_days),
+                    item["page_id"],
+                )
+            )
+        changed_candidates.sort(reverse=True)
+        for index, _candidate in enumerate(changed_candidates):
+            page_id = _candidate[2]
+            item = scored_page_lookup[page_id]
+            boost = 8 if index == 0 else 4
+            item["topic_update_boost"] += boost
+            item["ranking_score"] += boost
+            item["evidence"].append(f"동일 주제 최신 변경 가중치 +{boost}")
 
     scored_pages.sort(key=lambda item: (item["ranking_score"], item["trust_score"], item["freshness_score"]), reverse=True)
     scored_pages = scored_pages[: args.top_n]
 
-    cluster_groups = cluster_pages(pages, args.title_similarity_threshold)
     clusters = []
     for idx, cluster in enumerate(cluster_groups, start=1):
         ordered = sorted(cluster, key=lambda item: days_ago(item.get("updated_at")) or 999999)
@@ -709,6 +1067,16 @@ def main() -> int:
 
     timeline = []
     for page in sorted(pages, key=lambda item: parse_datetime(item.get("updated_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
+        change = page.get("change_summary") or {}
+        if change.get("changed"):
+            timeline.append(
+                {
+                    "at": page.get("updated_at"),
+                    "page_id": page["page_id"],
+                    "event_type": "stored_reference_diff",
+                    "summary_ko": change.get("summary_ko"),
+                }
+            )
         summary = f"{(page.get('updated_at') or '날짜 미상')[:10]}: {page['title']} 문서가 갱신되었습니다."
         timeline.append({"at": page.get("updated_at"), "page_id": page["page_id"], "event_type": "updated", "summary_ko": summary})
         for event in page.get("version_events", [])[:3]:
@@ -722,6 +1090,12 @@ def main() -> int:
                     }
                 )
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    change_focus_summary = []
+    for event in timeline[:5]:
+        summary = event.get("summary_ko")
+        if summary and summary not in change_focus_summary:
+            change_focus_summary.append(summary)
 
     trusted_data = synthesize_trusted_data(scored_pages, page_lookup)
     synthesized_overview = synthesize_overview(scored_pages, page_lookup)
@@ -737,6 +1111,7 @@ def main() -> int:
         warnings,
         insights_payload,
         review_payload,
+        purpose=args.purpose,
     )
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as handle:
@@ -744,6 +1119,7 @@ def main() -> int:
 
     if args.emit_json_summary:
         summary_payload = {
+            "purpose": args.purpose,
             "summary": {
                 "best_current_candidate_page_id": max(scored_pages, key=lambda item: item["freshness_score"], default={}).get("page_id"),
                 "best_trust_candidate_page_id": max(scored_pages, key=lambda item: item["trust_score"], default={}).get("page_id"),
@@ -765,9 +1141,81 @@ def main() -> int:
             "trusted_data": trusted_data,
             "insights_summary": (insights_payload or {}).get("summary"),
             "review_summary": (review_payload or {}).get("summary"),
+            "attention_topics": [
+                {
+                    "topic_id": insight.get("topic_id"),
+                    "label": insight.get("label"),
+                    "why_now": (
+                        (insight.get("recent_change_summary") or [None])[0]
+                        or (insight.get("conflict_notes") or [None])[0]
+                        or insight.get("conclusion")
+                    ),
+                }
+                for insight in (insights_payload or {}).get("insights", [])[:5]
+            ],
+            "change_drivers": change_focus_summary,
+            "preferred_space_inference": preferred_space_inference_payload,
             "timeline": timeline[:50],
             "warnings": warnings,
         }
+        with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
+            json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+
+    feature_paths = persist_feature_state(
+        args.data_dir,
+        "curation-scoring",
+        {
+            "meta": {
+                "generated_at": meta.get("fetched_at") or datetime.now(timezone.utc).astimezone().isoformat(),
+                "input_path": os.path.abspath(args.input),
+                "output_path": os.path.abspath(args.output),
+                "summary_path": os.path.abspath(args.emit_json_summary) if args.emit_json_summary else None,
+            },
+            "weights": {
+                "people_signal_weight": args.people_signal_weight,
+                "freshness_weight": args.freshness_weight,
+                "relationship_weight": args.relationship_weight,
+                "recent_days_strong": args.recent_days_strong,
+                "recent_days_medium": args.recent_days_medium,
+                "title_similarity_threshold": args.title_similarity_threshold,
+                "preferred_space_boost_default": 8,
+                "topic_update_boost_primary": 8,
+                "topic_update_boost_secondary": 4,
+            },
+            "applied_features": {
+                "preferred_space_expansion_used": bool(meta.get("preferred_space_expansion", {}).get("used")),
+                "data_artifacts_used": bool(meta.get("data_artifacts", {}).get("used")),
+                "top_preferred_space_pages": [
+                    {
+                        "page_id": item.get("page_id"),
+                        "preferred_space_boost": item.get("preferred_space_boost", 0),
+                    }
+                    for item in scored_pages
+                    if item.get("preferred_space_boost", 0) > 0
+                ][:10],
+                "top_topic_update_pages": [
+                    {
+                        "page_id": item.get("page_id"),
+                        "topic_update_boost": item.get("topic_update_boost", 0),
+                    }
+                    for item in scored_pages
+                    if item.get("topic_update_boost", 0) > 0
+                ][:10],
+            },
+        },
+    )
+
+    if args.emit_json_summary:
+        with open(args.emit_json_summary, "r", encoding="utf-8") as handle:
+            summary_payload = json.load(handle)
+        summary_payload.setdefault("meta", {})
+        summary_payload["meta"]["data_artifacts"] = {
+            "feature_latest_path": feature_paths["latest_path"],
+            "feature_history_path": feature_paths["history_path"],
+        }
+        if change_focus_summary:
+            summary_payload["meta"]["data_artifacts"]["change_focus_summary"] = change_focus_summary
         with open(args.emit_json_summary, "w", encoding="utf-8") as handle:
             json.dump(summary_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
