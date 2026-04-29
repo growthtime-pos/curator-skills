@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from data_store import write_json
+from feedback_store import (
+    FeedbackUploadError,
+    append_feedback_record,
+    build_feedback_record,
+    collect_feedback_from_cli,
+    create_github_feedback_issue,
+    default_feedback_output,
+    github_upload_config_from_env,
+    github_upload_requested_from_env,
+    new_run_id,
+    summarize_artifact_counts,
+)
 from pipeline_registry import (
     default_method_for_purpose,
     load_stage_registry,
@@ -97,6 +109,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-output")
     parser.add_argument("--brief-output")
     parser.add_argument("--brief-markdown-output")
+    parser.add_argument(
+        "--feedback-output",
+        help="피드백 JSONL append 저장 경로. 기본값은 <output-dir>/feedback/feedback.jsonl",
+    )
+    parser.add_argument("--no-feedback", action="store_true", help="완료 후 피드백 질문 생략")
+    parser.add_argument(
+        "--feedback-prompt",
+        action="store_true",
+        help="TTY가 아니어도 완료 후 피드백 질문을 표시합니다. --non-interactive 에서는 무시됩니다.",
+    )
     return parser.parse_args()
 
 
@@ -199,6 +221,12 @@ def read_json(path: str) -> Dict[str, Any]:
         return json.load(handle)
 
 
+def read_json_if_exists(path: str) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return None
+    return read_json(path)
+
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9가-힣]+", "-", value.lower()).strip("-")
     return slug or "question"
@@ -283,6 +311,7 @@ def build_plan(
     selected_methods: Dict[str, str],
     artifacts: Dict[str, str],
     source_inputs: List[str],
+    run_id: str,
 ) -> Dict[str, Any]:
     stages: List[Dict[str, Any]] = []
     for stage in registry.get("stages", []):
@@ -300,6 +329,7 @@ def build_plan(
         )
     return {
         "meta": {
+            "run_id": run_id,
             "generated_at": iso_now(),
             "source_type": "pipeline_plan",
             "purpose": args.purpose,
@@ -320,6 +350,84 @@ def build_plan(
         "followup_questions": args.followup_questions or [],
         "stages": stages,
     }
+
+
+def should_prompt_for_feedback(args: argparse.Namespace) -> bool:
+    if args.no_feedback or args.non_interactive:
+        return False
+    return args.feedback_prompt or sys.stdin.isatty()
+
+
+def record_feedback_if_requested(
+    args: argparse.Namespace,
+    artifacts: Dict[str, str],
+    selected_methods: Dict[str, str],
+    run_id: str,
+) -> Dict[str, Any]:
+    feedback_output = (
+        os.path.abspath(args.feedback_output)
+        if args.feedback_output
+        else default_feedback_output(artifacts["output_dir"])
+    )
+    requested = should_prompt_for_feedback(args)
+    status: Dict[str, Any] = {
+        "feedback_requested": requested,
+        "feedback_recorded": False,
+        "feedback_output": feedback_output if requested else None,
+        "feedback_upload_requested": False,
+        "feedback_uploaded": False,
+        "feedback_upload_target": None,
+        "feedback_issue_url": None,
+        "feedback_upload_error": None,
+    }
+    if not requested:
+        return status
+
+    responses = collect_feedback_from_cli()
+    if responses is None:
+        return status
+
+    summary_counts = summarize_artifact_counts(
+        read_json_if_exists(artifacts["expanded"]),
+        read_json_if_exists(artifacts["insights"]),
+        read_json_if_exists(artifacts["review"]),
+    )
+    record = build_feedback_record(
+        run_id=run_id,
+        purpose=args.purpose,
+        selected_methods=selected_methods,
+        artifacts=artifacts,
+        responses=responses,
+        summary_counts=summary_counts,
+    )
+    append_feedback_record(feedback_output, record)
+    status["feedback_recorded"] = True
+    status["feedback_output"] = feedback_output
+    print(f"피드백이 저장되었습니다: {feedback_output}")
+
+    status["feedback_upload_requested"] = github_upload_requested_from_env()
+    try:
+        upload_config = github_upload_config_from_env()
+    except FeedbackUploadError as exc:
+        status["feedback_upload_error"] = str(exc)
+        print(f"피드백 GitHub Issue 업로드 설정 오류: {exc}")
+        return status
+
+    if not upload_config:
+        return status
+
+    status["feedback_upload_target"] = upload_config["repo"]
+    try:
+        upload_result = create_github_feedback_issue(record, upload_config)
+    except FeedbackUploadError as exc:
+        status["feedback_upload_error"] = str(exc)
+        print(f"피드백 GitHub Issue 업로드 실패: {exc}")
+        return status
+
+    status["feedback_uploaded"] = True
+    status["feedback_issue_url"] = upload_result["issue_url"]
+    print(f"피드백 GitHub Issue가 생성되었습니다: {upload_result['issue_url']}")
+    return status
 
 
 def update_stage_status(plan: Dict[str, Any], stage_id: str, status: str) -> None:
@@ -580,13 +688,14 @@ def render_outputs(
 def main() -> int:
     args = parse_args()
     root = repo_root()
+    run_id = new_run_id()
     registry = load_stage_registry()
     selected_methods = resolve_stage_methods(args, registry)
     artifacts = artifact_paths(args)
     os.makedirs(artifacts["output_dir"], exist_ok=True)
 
     source_inputs = materialize_source_fetch(args, artifacts, root)
-    plan = build_plan(args, registry, selected_methods, artifacts, source_inputs)
+    plan = build_plan(args, registry, selected_methods, artifacts, source_inputs, run_id)
     write_json(artifacts["pipeline_plan"], plan)
 
     merge_inputs(source_inputs, artifacts["merged"], root)
@@ -703,6 +812,7 @@ def main() -> int:
 
     result = {
         "meta": {
+            "run_id": run_id,
             "generated_at": iso_now(),
             "source_type": "orchestrate_pipeline",
             "purpose": args.purpose,
@@ -717,6 +827,7 @@ def main() -> int:
         if os.path.isdir(artifacts["followup_dir"])
         else [],
     }
+    result.update(record_feedback_if_requested(args, artifacts, plan["selected_methods"], run_id))
     write_json(artifacts["pipeline_result"], result)
     print(f"Confluence pipeline orchestration completed: {artifacts['pipeline_result']}")
     return 0
