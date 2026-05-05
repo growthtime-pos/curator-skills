@@ -262,6 +262,33 @@ def collect_missing_signals(cluster_pages: List[Dict[str, Any]], global_missing:
     return sorted(set(filtered))
 
 
+def summarize_retrieval(cluster_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    source_counts: Dict[str, int] = {}
+    query_terms: List[str] = []
+    preferred_spaces: List[str] = []
+    top_reasons: List[str] = []
+    for page in cluster_pages:
+        source = page.get("discovery_source", "unknown")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        for reason in page.get("discovery_reasons", []):
+            if reason and reason not in top_reasons:
+                top_reasons.append(reason)
+        for path in page.get("retrieval_paths", []):
+            query = (path.get("query") or "").strip()
+            if query and query not in query_terms:
+                query_terms.append(query)
+            preferred_space = path.get("preferred_space")
+            if preferred_space and preferred_space not in preferred_spaces:
+                preferred_spaces.append(preferred_space)
+    return {
+        "source_counts": source_counts,
+        "query_terms": query_terms[:5],
+        "preferred_spaces": preferred_spaces[:5],
+        "top_reasons": top_reasons[:5],
+        "expanded_only": source_counts.get("query_seed", 0) == 0 and source_counts.get("preferred_space_expansion", 0) > 0,
+    }
+
+
 def page_summary(page: Optional[Dict[str, Any]], max_snippets: int) -> Optional[Dict[str, Any]]:
     if not page:
         return None
@@ -280,6 +307,9 @@ def page_summary(page: Optional[Dict[str, Any]], max_snippets: int) -> Optional[
         "labels": page.get("labels", []),
         "keywords": page.get("keywords", [])[:8],
         "snippets": pick_snippets(page, max_snippets),
+        "discovery_source": page.get("discovery_source", "query_seed"),
+        "discovery_reasons": page.get("discovery_reasons", [])[:3],
+        "retrieval_paths": page.get("retrieval_paths", [])[:3],
     }
 
 
@@ -318,6 +348,7 @@ def build_evidence_pack(
         "stale_candidate": page_summary(candidates.get("stale"), max_snippets),
         "maintainer_signals": summarize_maintainers(cluster_pages, max_maintainers),
         "recent_changes": summarize_changes(cluster_pages),
+        "retrieval_summary": summarize_retrieval(cluster_pages),
         "conflict_notes": conflict_notes(cluster, cluster_pages, candidates),
         "missing_signals": collect_missing_signals(cluster_pages, global_missing),
         "evidence_snippets": evidence_snippets,

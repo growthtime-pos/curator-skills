@@ -50,6 +50,8 @@ def summarize_candidate(candidate: Optional[Dict[str, Any]]) -> Optional[Dict[st
         "freshness_score": candidate.get("freshness_score"),
         "trust_score": candidate.get("trust_score"),
         "keywords": candidate.get("keywords", []),
+        "discovery_source": candidate.get("discovery_source", "query_seed"),
+        "discovery_reasons": candidate.get("discovery_reasons", [])[:3],
     }
 
 
@@ -135,6 +137,9 @@ def derive_gap_summary(pack: Dict[str, Any]) -> List[str]:
     gaps: List[str] = []
     for note in pack.get("missing_signals", [])[:3]:
         gaps.append(note)
+    retrieval_summary = pack.get("retrieval_summary") or {}
+    if retrieval_summary.get("expanded_only"):
+        gaps.append("이 주제는 직접 검색 시드보다 preferred-space 확장 경로에 더 의존했습니다.")
     if not pack.get("evidence_snippets"):
         gaps.append("이 주제에서는 인용 가능한 근거 문장을 추출하지 못했습니다.")
     return gaps
@@ -153,6 +158,7 @@ def derive_actions(
     conflict_notes = pack.get("conflict_notes", [])
     maintainers = pack.get("maintainer_signals", [])
     recent_changes = pack.get("recent_changes", [])
+    retrieval_summary = pack.get("retrieval_summary") or {}
 
     if purpose == "change-tracking":
         if recent_changes:
@@ -193,6 +199,8 @@ def derive_actions(
             )
         if pack.get("missing_signals"):
             actions.append("이 주제를 기준 정보로 보기 전에 누락된 프로필 또는 본문 근거를 보강하세요.")
+        if retrieval_summary.get("expanded_only"):
+            actions.append("preferred-space 확장으로만 찾은 주제이므로 원래 검색어 기준 문서와 다시 대조 검증하세요.")
 
     if strategy == "action-heavy-synthesis":
         if recent_changes:
@@ -272,6 +280,7 @@ def synthesize_topic(
         "suggested_actions": derive_actions(pack, max_actions, purpose, strategy),
         "evidence_page_ids": evidence_page_ids,
         "evidence_snippets": choose_evidence_snippets(pack, max_snippets),
+        "retrieval_summary": pack.get("retrieval_summary", {}),
         "warnings": pack.get("warnings", []),
     }
 

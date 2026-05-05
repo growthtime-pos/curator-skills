@@ -72,9 +72,41 @@ def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Optional
         for rel in relationships
     }
 
+    def merge_unique_strings(values: List[str]) -> List[str]:
+        seen = set()
+        merged: List[str] = []
+        for value in values:
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+        return merged
+
+    def merge_retrieval_paths(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen = set()
+        merged: List[Dict[str, Any]] = []
+        for item in list(left) + list(right):
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
     for page in pages:
         page.setdefault("discovery_source", "query_seed")
         page.setdefault("discovery_reasons", ["키워드 검색 시드"])
+        page.setdefault(
+            "retrieval_paths",
+            [
+                {
+                    "kind": "query_seed",
+                    "space_key": page.get("space_key"),
+                    "query": ((payload.get("meta") or {}).get("scope") or {}).get("query"),
+                    "reasons": page.get("discovery_reasons", ["키워드 검색 시드"]),
+                }
+            ],
+        )
         page.setdefault("preferred_space_match", page.get("space_key") in preferred_spaces if preferred_spaces else False)
         page.setdefault("preferred_space_boost", 8 if page.get("preferred_space_match") else 0)
 
@@ -87,8 +119,37 @@ def merge_expansion_payload(payload: Dict[str, Any], expansion_payload: Optional
         expanded_page.setdefault("discovery_reasons", [])
         expanded_page.setdefault("preferred_space_match", True)
         expanded_page.setdefault("preferred_space_boost", 8 if expanded_page.get("preferred_space_match") else 0)
+        expanded_page.setdefault(
+            "retrieval_paths",
+            [
+                {
+                    "kind": "preferred_space_expansion",
+                    "preferred_space": expanded_page.get("space_key"),
+                    "seed_page_ids": expanded_page.get("related_seed_page_ids", []),
+                    "relatedness_score": expanded_page.get("relatedness_score"),
+                    "reasons": expanded_page.get("discovery_reasons", []),
+                }
+            ],
+        )
         pages.append(expanded_page)
         page_ids.add(page_id)
+
+    page_lookup = {str(page.get("page_id")): page for page in pages if page.get("page_id")}
+    for expanded_page in expansion_payload.get("expanded_pages", []):
+        page_id = expanded_page.get("page_id")
+        if not page_id or page_id not in page_lookup:
+            continue
+        existing_page = page_lookup[page_id]
+        existing_page["discovery_reasons"] = merge_unique_strings(
+            list(existing_page.get("discovery_reasons", [])) + list(expanded_page.get("discovery_reasons", []))
+        )
+        existing_page["retrieval_paths"] = merge_retrieval_paths(
+            existing_page.get("retrieval_paths", []),
+            expanded_page.get("retrieval_paths", []),
+        )
+        existing_page["preferred_space_match"] = bool(
+            existing_page.get("preferred_space_match") or expanded_page.get("preferred_space_match")
+        )
 
     for person in expansion_payload.get("people", []):
         account_id = person.get("account_id") if person else None
@@ -445,6 +506,53 @@ def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings:
     return lines
 
 
+def retrieval_path_label(path: Dict[str, Any]) -> str:
+    kind = path.get("kind")
+    if kind == "preferred_space_expansion":
+        preferred_space = path.get("preferred_space") or "미상"
+        score = path.get("relatedness_score")
+        if score:
+            return f"선호 space `{preferred_space}` 확장 (연관도 {score})"
+        return f"선호 space `{preferred_space}` 확장"
+    if kind == "root_descendant_seed":
+        return "루트 하위 문서 시드"
+    if kind == "all_spaces_seed":
+        return "전체 space 시드"
+    if kind == "space_seed":
+        space_key = path.get("space_key") or "미상"
+        return f"space `{space_key}` 시드"
+    query = path.get("query")
+    if query:
+        return f"검색어 `{query}` 시드"
+    return "검색 시드"
+
+
+def build_retrieval_trace_lines(
+    scored_pages: List[Dict[str, Any]],
+    insights_payload: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    lines: List[str] = ["## 어떻게 찾았는지", ""]
+    if insights_payload:
+        for insight in insights_payload.get("insights", [])[:5]:
+            retrieval_summary = insight.get("retrieval_summary") or {}
+            labels: List[str] = []
+            for query in retrieval_summary.get("query_terms", [])[:2]:
+                labels.append(f"검색어 `{query}`")
+            for space in retrieval_summary.get("preferred_spaces", [])[:2]:
+                labels.append(f"선호 space `{space}`")
+            if retrieval_summary.get("expanded_only"):
+                labels.append("직접 검색보다 확장 의존")
+            if labels:
+                lines.append(f"- 주제 **{insight.get('label') or insight.get('topic_id')}**: {', '.join(labels)}")
+    for item in scored_pages[:5]:
+        labels = [retrieval_path_label(path) for path in item.get("retrieval_paths", [])[:2]]
+        if not labels:
+            labels = ["검색 경로 정보 부족"]
+        lines.append(f"- 문서 **{item['title']}**: {'; '.join(labels)}")
+    lines.append("")
+    return lines
+
+
 def build_review_lookup(review_payload: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     if not review_payload:
         return {}
@@ -505,6 +613,9 @@ def build_topic_insight_lines(
                 lines.append(f"- 변경: {change}")
             if current:
                 lines.append(f"- 가장 활발한 문서: `{current.get('title')}`")
+            retrieval_summary = insight.get("retrieval_summary") or {}
+            if retrieval_summary.get("expanded_only"):
+                lines.append("- 탐색 경로: preferred-space 확장 의존도가 높습니다.")
             for action in (insight.get("suggested_actions") or [])[:3]:
                 lines.append(f"- 후속 조치: {action}")
 
@@ -516,6 +627,9 @@ def build_topic_insight_lines(
                 lines.append(f"- 배경 읽기: `{background.get('title')}`")
             if stale:
                 lines.append(f"- 역사적 맥락: `{stale.get('title')}`")
+            retrieval_summary = insight.get("retrieval_summary") or {}
+            if retrieval_summary.get("expanded_only"):
+                lines.append("- 탐색 메모: 직접 검색만으로는 잡히지 않은 주제입니다.")
             for action in (insight.get("suggested_actions") or [])[:3]:
                 lines.append(f"- 추천: {action}")
 
@@ -527,6 +641,12 @@ def build_topic_insight_lines(
                 lines.append(f"- 배경 참고 문서: `{background.get('title')}`")
             if stale:
                 lines.append(f"- 오래된 참고 후보: `{stale.get('title')}`")
+            retrieval_summary = insight.get("retrieval_summary") or {}
+            if retrieval_summary.get("query_terms"):
+                query_terms = ", ".join(f"`{term}`" for term in retrieval_summary.get("query_terms", [])[:2])
+                lines.append(f"- 탐색 단서: 검색어 {query_terms}")
+            if retrieval_summary.get("expanded_only"):
+                lines.append("- 탐색 메모: 직접 검색보다 확장 경로 의존도가 높습니다.")
             for note in (insight.get("conflict_notes") or [])[:2]:
                 lines.append(f"- 충돌 또는 중복 신호: {note}")
             for change in (insight.get("recent_change_summary") or [])[:2]:
@@ -606,6 +726,8 @@ def build_markdown_general(
         reason = (item.get("evidence") or ["우선순위 상위 문서입니다."])[0]
         lines.append(f"- **{item['title']}**: {reason}")
     lines.append("")
+
+    lines.extend(build_retrieval_trace_lines(scored_pages, insights_payload))
 
     topic_lines = build_topic_insight_lines(insights_payload, review_payload, "general")
     if topic_lines:
@@ -719,6 +841,8 @@ def build_markdown_change_tracking(
                 lines.append(f"  - `{item['title']}`: {capped} 버전 이벤트")
     lines.append("")
 
+    lines.extend(build_retrieval_trace_lines(scored_pages, insights_payload))
+
     # 3. 주제별 변경 동향 (insights)
     topic_lines = build_topic_insight_lines(insights_payload, review_payload, "change-tracking")
     if topic_lines:
@@ -813,6 +937,8 @@ def build_markdown_onboarding(
     else:
         lines.append("- 읽기 순서를 추천할 만한 문서가 충분하지 않습니다.")
     lines.append("")
+
+    lines.extend(build_retrieval_trace_lines(scored_pages, insights_payload))
 
     # 3. 주제별 학습 가이드 (insights)
     topic_lines = build_topic_insight_lines(insights_payload, review_payload, "onboarding")
@@ -992,11 +1118,14 @@ def main() -> int:
         if not risk_notes:
             risk_notes.append("현재 기준으로는 큰 충돌 신호가 많지 않습니다.")
         preferred_space_boost = int(page.get("preferred_space_boost", 0) or 0)
-        ranking_score = trust_score + freshness_score + preferred_space_boost
+        ranking_score = trust_score + freshness_score
         if page.get("preferred_space_match"):
-            evidence.append(f"선호 space 우대 +{preferred_space_boost}")
+            evidence.append("선호 space 연관 문서로 포착됨 (설명용 힌트)")
         if page.get("discovery_source") == "preferred_space_expansion":
             evidence.append("선호 space 연관 탐색으로 포함")
+        retrieval_paths = page.get("retrieval_paths", [])
+        if len(retrieval_paths) > 1:
+            evidence.append(f"복수 retrieval 경로 {len(retrieval_paths)}개")
         scored_pages.append(
             {
                 "page_id": page["page_id"],
@@ -1014,6 +1143,7 @@ def main() -> int:
                 "risk_notes": risk_notes,
                 "discovery_source": page.get("discovery_source", "query_seed"),
                 "discovery_reasons": page.get("discovery_reasons", []),
+                "retrieval_paths": page.get("retrieval_paths", []),
                 "preferred_space_match": bool(page.get("preferred_space_match")),
                 "preferred_space_boost": preferred_space_boost,
                 "topic_update_boost": 0,

@@ -83,11 +83,6 @@ def page_strength(page: Dict[str, Any], people_by_id: Dict[str, Dict[str, Any]])
         score += min(float(change.get("importance_score", 0) or 0) / 8.0, 2.4)
         reasons.append(change.get("summary_ko") or "저장본 대비 변경 감지")
 
-    preferred_space_boost = float(page.get("preferred_space_boost", 0) or 0)
-    if preferred_space_boost > 0:
-        score += preferred_space_boost / 4.0
-        reasons.append("기존 preferred-space 연관성 흔적")
-
     team_hits = 0
     for account_id in page.get("recent_contributors", []):
         person = people_by_id.get(account_id) or {}

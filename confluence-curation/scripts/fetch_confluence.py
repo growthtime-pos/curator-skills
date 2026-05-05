@@ -30,6 +30,29 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
+def parse_query_terms(query: Optional[str]) -> List[str]:
+    if not query:
+        return []
+    return [term.strip().lower() for term in re.split(r"\s*\|\s*|,", query) if term.strip()]
+
+
+def escape_cql_term(term: str) -> str:
+    return term.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_cql_query(query: str) -> str:
+    terms = parse_query_terms(query)
+    if not terms:
+        escaped = escape_cql_term(query.strip())
+        return f'text ~ "{escaped}" or title ~ "{escaped}"'
+    clauses: List[str] = []
+    for term in terms:
+        escaped = escape_cql_term(term)
+        clauses.append(f'text ~ "{escaped}"')
+        clauses.append(f'title ~ "{escaped}"')
+    return " or ".join(clauses)
+
+
 def parse_args() -> argparse.Namespace:
     config_override = os.getenv("CONFLUENCE_CONFIG_PATH")
     resolved_config = resolve_saved_config(
@@ -535,7 +558,7 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
         cql_parts = ["type = page"]
         if args.space_key:
             cql_parts.append(f'space = "{args.space_key}"')
-        cql_query = f'text ~ "{args.query}" or title ~ "{args.query}"'
+        cql_query = build_cql_query(args.query)
         cql_parts.append(f"({cql_query})")
         base_params = {
             "limit": limit,
@@ -715,10 +738,42 @@ def page_matches_filters(page: Dict[str, Any], days: Optional[int], label: Optio
             (page.get("title") or "").lower(),
             strip_html(((((page.get("body") or {}).get("storage") or {}).get("value"))) or "") or "",
         ]
-        terms = [term.strip().lower() for term in re.split(r"\s*\|\s*|,", query) if term.strip()]
+        terms = parse_query_terms(query)
         if terms and not any(term in hay for term in terms for hay in haystacks):
             return False
     return True
+
+
+def build_retrieval_seed_metadata(args: argparse.Namespace, page: Dict[str, Any]) -> Dict[str, Any]:
+    source = "space_seed"
+    reasons = ["스페이스 범위 시드"]
+    if args.query:
+        source = "query_seed"
+        reasons = ["키워드 검색 시드"]
+    elif args.root_page_id:
+        source = "root_descendant_seed"
+        reasons = ["루트 페이지 하위 문서 시드"]
+    elif args.all_spaces:
+        source = "all_spaces_seed"
+        reasons = ["전체 스페이스 범위 시드"]
+
+    return {
+        "discovery_source": source,
+        "discovery_reasons": reasons,
+        "retrieval_paths": [
+            {
+                "kind": source,
+                "space_key": (page.get("space") or {}).get("key") or args.space_key,
+                "query": args.query,
+                "root_page_id": args.root_page_id,
+                "label": args.label,
+                "all_spaces": bool(args.all_spaces),
+                "reasons": reasons,
+            }
+        ],
+        "preferred_space_match": False,
+        "preferred_space_boost": 0,
+    }
 
 
 def normalize_pages(
@@ -749,6 +804,7 @@ def normalize_pages(
         )
         contributor_ids.extend(recent_contributors)
         body_value = ((((page.get("body") or {}).get("storage") or {}).get("value"))) if args.include_body else None
+        retrieval_meta = build_retrieval_seed_metadata(args, page)
         normalized = {
             "page_id": page_id,
             "title": page.get("title"),
@@ -768,6 +824,7 @@ def normalize_pages(
             "version_events": version_events,
             "recent_contributors": recent_contributors,
             "body_excerpt": strip_html(body_value),
+            **retrieval_meta,
         }
         pages.append(normalized)
     return pages, list(dict.fromkeys(filter(None, contributor_ids)))
