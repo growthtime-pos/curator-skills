@@ -6,8 +6,8 @@
 
 - stage 경계를 stable artifact 로 유지한다
 - stage별 방법론 선택은 master orchestrator 가 담당한다
-- 복잡한 stage만 별도 skill 로 승격한다
-- deterministic tool stage 와 policy-heavy skill stage 를 섞어 쓴다
+- 복잡한 stage도 별도 skill 로 노출하지 않고 `confluence-curation` 내부 stage 로 유지한다
+- deterministic tool stage 와 policy-heavy internal stage 를 섞어 쓴다
 
 ## Stage 정의
 
@@ -43,7 +43,7 @@
 ## Master Entry Point
 
 - CLI: `python3 confluence-curation/scripts/orchestrate_pipeline.py ...`
-- skill package: `confluence-curation/extensions/pipeline-orchestrator/`
+- user-facing skill: `confluence-curation`
 
 ## Artifact Contract
 
