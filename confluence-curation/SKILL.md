@@ -13,6 +13,9 @@ It should also help the user understand recent 흐름, what people are implicitl
 
 When internal preferred spaces look strong, run the built-in `scripts/expand_preferred_space.py` step and merge its JSON artifact into the final curation flow.
 
+Pipeline stages and preferred-space expansion are internal parts of this skill.
+Do not call or expose separate `pipeline-*` or `preferred-space-expansion` skills; use this Confluence Curation skill as the single user-facing entry point.
+
 The goal is not to declare one document as absolute truth.
 The goal is to show:
 - which pages look most current
@@ -83,7 +86,7 @@ python3 confluence-curation/scripts/configure_confluence.py clear
 12. Read [references/insight-architecture.md](references/insight-architecture.md) if you need the staged insight pipeline and artifact model.
 13. Read [references/review-rubric.md](references/review-rubric.md) before writing executive conclusions or conflict-heavy summaries.
 14. Read [references/implementation-roadmap.md](references/implementation-roadmap.md) when planning staged implementation work.
-15. If the user wants per-stage method selection, run `scripts/orchestrate_pipeline.py` and let it choose methods for `pre_analysis / extract / cluster / analyze / synthesize / validate`, then persist `pipeline_plan.json`.
+15. If the user wants per-stage method selection, run `scripts/orchestrate_pipeline.py` from this skill and let it choose methods for `pre_analysis / extract / cluster / analyze / synthesize / validate`, then persist `pipeline_plan.json`.
 16. Otherwise run `scripts/curate_confluence.py --purpose {purpose}` on the merged JSON, plus the optional preferred-space expansion artifact and preferred-space inference artifact when present. Pass the purpose determined in step 6.
 17. After `scripts/orchestrate_pipeline.py` completes in an interactive terminal, ask the built-in 4-question feedback prompt and tell the user where the JSONL record was saved. The default path is `<output-dir>/feedback/feedback.jsonl`. If the GitHub feedback env vars are set, the same feedback is also uploaded as a new internal GitHub Enterprise Issue. Use `--no-feedback` to skip it, or `--feedback-output <path>` to append somewhere else. `--non-interactive` never prompts or uploads feedback.
 18. Run `scripts/render_insight_brief.py` when the user wants a briefing-style first response.
@@ -116,7 +119,7 @@ Prefer saving intermediate artifacts instead of hiding all reasoning inside one 
 
 ## Stage-Selectable Pipeline
 
-When the user wants stage-by-stage method choice, use the master orchestrator instead of hand-wiring every script.
+When the user wants stage-by-stage method choice, use the built-in master orchestrator instead of hand-wiring every script.
 
 Stage model:
 
@@ -130,7 +133,7 @@ Stage model:
 Rules:
 
 - treat `extract` and `analyze` as tool-first stages
-- treat `pre_analysis`, `cluster`, `synthesize`, and `validate` as method-selectable stages
+- treat `pre_analysis`, `cluster`, `synthesize`, and `validate` as method-selectable internal stages
 - keep stage outputs as JSON artifacts even when the stage behaves like a skill
 - write `pipeline_plan.json` and `pipeline_result.json` for reruns and debugging
 
