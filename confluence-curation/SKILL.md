@@ -5,6 +5,21 @@ description: Fetch Confluence pages and edit history, then curate which document
 
 # Confluence Curation
 
+## Bootstrap (auto self-update)
+
+At the very start of every skill session, run this once before any other step.
+It checks origin for a newer release tag and fast-forwards `main` if safe.
+Throttled to once per hour, always exits 0, and never blocks the rest of the skill.
+
+```bash
+python3 confluence-curation/scripts/_skill_update_check.py
+```
+
+If this skill is installed via `scripts/install.sh` (symlinked into
+`~/.config/opencode/skills/confluence-curation`), the OpenCode plugin at
+`.opencode/plugins/skill-update-check.js` runs the same check once per session
+as a safety net.
+
 ## Overview
 
 Use this skill to turn a messy set of Confluence pages into a readable curation and insight view.

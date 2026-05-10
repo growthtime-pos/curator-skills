@@ -36,6 +36,9 @@
 - `confluence-curation/references/` contains prompt, bootstrap, scoring, architecture, and review references, not executable code.
 - `confluence-curation/references/purposes/` contains purpose-specific output template definitions (`_base.md`, `change-tracking.md`, `onboarding.md`).
 - `confluence-curation/references/purpose-registry.md` is the master index of available curation purposes, trigger phrases, and CLI flag mappings.
+- `confluence-curation/scripts/_skill_update_check.py` is the stdlib-only auto self-update check that compares the local `v*` tag with origin's latest and fast-forward pulls `main` when safe; throttled to once per hour.
+- `scripts/install.sh` symlinks `confluence-curation/` into `~/.config/opencode/skills/confluence-curation/` and the plugin into `~/.config/opencode/plugins/skill-update-check.js` for global OpenCode use; supports `--uninstall` and `--force`.
+- `.opencode/plugins/skill-update-check.js` is the OpenCode plugin that invokes `_skill_update_check.py` once per session as a safety net for the SKILL.md bootstrap instruction.
 - `confluence-curation/scripts/__pycache__/` is generated output and should not be edited by hand.
 
 ## Runtime Assumptions
