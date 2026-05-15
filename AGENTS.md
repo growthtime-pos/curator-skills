@@ -24,7 +24,7 @@
 - `confluence-curation/scripts/merge_fetched.py` merges and deduplicates multiple fetch result files.
 - `confluence-curation/scripts/orchestrate_pipeline.py` is the top-level stage-selectable pipeline runner that writes `pipeline_plan.json` and `pipeline_result.json`.
 - `confluence-curation/scripts/pipeline_registry.py` loads and validates the pipeline stage registry.
-- `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator; supports `--purpose` flag for purpose-specific output (`general`, `change-tracking`, `onboarding`).
+- `confluence-curation/scripts/curate_confluence.py` is the offline scoring and Markdown report generator; supports `--purpose` flag for purpose-specific output (`general`, `change-tracking`, `onboarding`, `weekly-report`).
 - `confluence-curation/scripts/synthesize_insights.py` generates topic-level insights from evidence packs; supports both `--purpose` and `--strategy`.
 - `confluence-curation/scripts/review_insights.py` runs second-pass review over synthesized insights; supports both `--purpose` and `--strategy`.
 - `confluence-curation/scripts/infer_preferred_spaces.py` infers internal preferred-space candidates from first-pass search results.
@@ -34,7 +34,7 @@
 - `confluence-curation/pipeline/stage_registry.json` is the source of truth for stage IDs, methods, and default method selection.
 - `confluence-curation/extensions/preferred-space-expansion/` keeps backward-compatible preferred-space fixtures, schema references, and the older standalone expansion script, but it is no longer a user-facing skill entry point.
 - `confluence-curation/references/` contains prompt, bootstrap, scoring, architecture, and review references, not executable code.
-- `confluence-curation/references/purposes/` contains purpose-specific output template definitions (`_base.md`, `change-tracking.md`, `onboarding.md`).
+- `confluence-curation/references/purposes/` contains purpose-specific output template definitions (`_base.md`, `change-tracking.md`, `onboarding.md`, `weekly-report.md`).
 - `confluence-curation/references/purpose-registry.md` is the master index of available curation purposes, trigger phrases, and CLI flag mappings.
 - `confluence-curation/scripts/_skill_update_check.py` is the stdlib-only auto self-update check that compares the local `v*` tag with origin's latest and fast-forward pulls `main` when safe; throttled to once per hour.
 - `scripts/install.sh` symlinks `confluence-curation/` into `~/.config/opencode/skills/confluence-curation/` and the plugin into `~/.config/opencode/plugins/skill-update-check.js` for global OpenCode use; supports `--uninstall` and `--force`.
@@ -173,7 +173,7 @@
   1. Run `configure_confluence.py status --json` and confirm the active config source/path and any missing fields.
   2. Run `fetch_confluence.py` with a small scope and `--output tmp/fetch.json`.
   3. For the legacy flow, run `curate_confluence.py --input tmp/fetch.json --output tmp/report.md`.
-  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py --strategy {cluster_method}`, `extract_evidence.py --strategy {analyze_method}`, `synthesize_insights.py --purpose {purpose} --strategy {synthesize_method}`, `review_insights.py --purpose {purpose} --strategy {validate_method}`, then `curate_confluence.py --insights-input ... --review-input ... --purpose {purpose}`. Valid purposes: `general` (default), `change-tracking`, `onboarding`.
+  4. For the staged insight flow, run `normalize_confluence.py`, `cluster_confluence.py --strategy {cluster_method}`, `extract_evidence.py --strategy {analyze_method}`, `synthesize_insights.py --purpose {purpose} --strategy {synthesize_method}`, `review_insights.py --purpose {purpose} --strategy {validate_method}`, then `curate_confluence.py --insights-input ... --review-input ... --purpose {purpose}`. Valid purposes: `general` (default), `change-tracking`, `onboarding`, `weekly-report`.
   5. For the stage-selectable orchestrated flow, run `orchestrate_pipeline.py --fetch-input tmp/fetch.json --output-dir tmp/pipeline` and inspect `pipeline_plan.json`, `pipeline_result.json`, `report.md`, and `brief.json`.
   6. Inspect the JSON and Markdown for schema and content regressions.
   7. For a fast regression check, prefer `python3 confluence-curation/scripts/smoke_pipeline.py`.

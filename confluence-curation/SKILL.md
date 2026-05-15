@@ -92,7 +92,7 @@ python3 confluence-curation/scripts/configure_confluence.py clear
    - target space or all accessible spaces
    - seed page or page set
    - optional date window
-6. Determine the curation purpose. Infer from the user's query using trigger phrases in [references/purpose-registry.md](references/purpose-registry.md). If confident, state the inferred purpose and proceed. If ambiguous, ask the user. Default to `general` if no clear match. Available purposes: `general`, `change-tracking`, `onboarding`.
+6. Determine the curation purpose. Infer from the user's query using trigger phrases in [references/purpose-registry.md](references/purpose-registry.md). If confident, state the inferred purpose and proceed. If ambiguous, ask the user. Default to `general` if no clear match. Available purposes: `general`, `change-tracking`, `onboarding`, `weekly-report`.
 7. Run `scripts/fetch_confluence.py` to collect page metadata, limited version history, body excerpts, and profile hints.
 8. Infer internal preferred spaces from the first fetch result by running `scripts/infer_preferred_spaces.py`.
 9. If preferred spaces were inferred, automatically run `scripts/expand_preferred_space.py` to fetch related pages from those spaces and merge them into the main flow. Do not ask the user to enumerate spaces manually unless the workflow is blocked.
@@ -203,6 +203,10 @@ Reference:
 - Infer preferred spaces internally from the first search result instead of asking the user to list all spaces.
 - Use preferred-space expansion as an internal retrieval step when the inferred spaces look strong enough.
 - Use `--all-spaces` when the user wants cross-space search instead of a single space.
+- Use `--page-url` when the user gives a Confluence page URL; the fetcher extracts the page id from `pageId=` or `/pages/{id}/`.
+- Use `--include-root-page` with `--page-url` or `--root-page-id` when the root page itself should be included alongside descendants.
+- Use `--updated-from` and `--updated-to` for exact date windows; use `--days` only for rolling recent windows.
+- Use `--contributors` when the user wants pages from specific people. It matches account id, display/public name, or email against creator, recent updater, and version-history contributors.
 - Use `--include-body` when the user wants the skill to organize the content itself, not only metadata.
 - Use `--cache-dir` to persist fetched results locally and reuse them later.
 - Use `--data-dir` to persist reusable page snapshots, history, and run artifacts inside the workspace.
@@ -236,6 +240,9 @@ Always produce: trend summary, trend signals (new docs, update frequency, contri
 
 ### `onboarding`
 Always produce: topic summary for newcomers, recommended reading order, key content bullets, background context, document map by cluster, exploration suggestions (related spaces/labels).
+
+### `weekly-report`
+Always produce: report scope, weekly executive summary, topic-level change trends, per-person activity, major update timeline, document detail table, next-week follow-up items. Use this when the user asks for 주간보고, 이번 주 활동, or reports scoped by specific people and dates.
 
 When the user asks for deeper insight analysis, also produce:
 - topic clusters or comparable document groups
@@ -361,6 +368,7 @@ python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-m
 
 - `python3 confluence-curation/scripts/configure_confluence.py status --json`
 - `python3 confluence-curation/scripts/fetch_confluence.py --space-key ENG --data-dir data --output data/confluence.json`
+- `python3 confluence-curation/scripts/fetch_confluence.py --page-url "https://wiki.example.com/spaces/ENG/pages/123456/Weekly" --include-root-page --updated-from 2026-05-04 --updated-to 2026-05-10 --contributors "홍길동,kim@example.com" --include-body --output data/weekly-fetch.json`
 - `python3 confluence-curation/scripts/fetch_confluence.py --all-spaces --query "인공지능" --include-body --cache-dir ~/.confluence-curation-cache --data-dir data --output data/confluence-ai.json`
 - `python3 confluence-curation/scripts/infer_preferred_spaces.py --input data/confluence-ai.json --output data/preferred-spaces.json`
 - `python3 confluence-curation/scripts/render_insight_brief.py --fetch-input data/fetch-merged.json --insights-input data/insights.json --review-input data/review.json --summary-input data/summary.json --output data/brief.json`
@@ -370,6 +378,7 @@ python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-m
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --expansion-input data/confluence-ai-expanded.json --output data/confluence.md`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose change-tracking`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose onboarding`
+- `python3 confluence-curation/scripts/orchestrate_pipeline.py --page-url "https://wiki.example.com/spaces/ENG/pages/123456/Weekly" --include-root-page --updated-from 2026-05-04 --updated-to 2026-05-10 --contributors "홍길동,kim@example.com" --include-body --purpose weekly-report --output-dir data/weekly-report --non-interactive`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
@@ -390,7 +399,7 @@ Use the staged pipeline when you want topic-level insight instead of only page r
    - `python3 confluence-curation/scripts/cluster_confluence.py --input data/normalized.json --output data/clusters.json`
 5. Build evidence packs:
    - `python3 confluence-curation/scripts/extract_evidence.py --normalized-input data/normalized.json --clusters-input data/clusters.json --output-dir data/evidence --emit-manifest data/evidence-manifest.json`
-6. Synthesize topic insights (replace `{purpose}` with `general`, `change-tracking`, or `onboarding`):
+6. Synthesize topic insights (replace `{purpose}` with `general`, `change-tracking`, `onboarding`, or `weekly-report`):
    - `python3 confluence-curation/scripts/synthesize_insights.py --manifest data/evidence-manifest.json --output data/insights.json --purpose {purpose}`
 7. Run the second-pass review:
    - `python3 confluence-curation/scripts/review_insights.py --input data/insights.json --output data/review.json --purpose {purpose}`

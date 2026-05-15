@@ -25,6 +25,7 @@ STATUS_KO = {
 
 CONFIDENCE_KO = {"high": "높음", "medium": "보통", "low": "낮음"}
 VERDICT_KO = {"approved": "승인", "review": "추가 검토", "revise": "수정 필요"}
+PURPOSES = ["general", "change-tracking", "onboarding", "weekly-report"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--relationship-weight", type=float, default=25.0)
     parser.add_argument("--emit-json-summary")
     parser.add_argument("--data-dir", default=os.getenv("CONFLUENCE_DATA_DIR") or default_data_dir())
-    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--purpose", default="general", choices=PURPOSES)
     return parser.parse_args()
 
 
@@ -768,6 +769,114 @@ def build_markdown_change_tracking(
     return "\n".join(lines)
 
 
+def person_label(account_id: str, people_by_id: Dict[str, Dict[str, Any]]) -> str:
+    person = people_by_id.get(account_id)
+    if not person:
+        return account_id
+    display = person.get("display_name") or person.get("public_name") or account_id
+    team = ((person.get("org_hint") or {}).get("team"))
+    return f"{display} ({team})" if team else display
+
+
+def build_markdown_weekly_report(
+    meta: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    scored_pages: List[Dict[str, Any]],
+    clusters: List[Dict[str, Any]],
+    timeline: List[Dict[str, Any]],
+    trusted_data: List[Dict[str, Any]],
+    synthesized_overview: List[str],
+    warnings: List[str],
+    insights_payload: Optional[Dict[str, Any]] = None,
+    review_payload: Optional[Dict[str, Any]] = None,
+    people_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
+    people_by_id = people_by_id or {}
+    scope = meta.get("scope", {}) or {}
+    lines: List[str] = ["# Confluence 주간보고", ""]
+
+    lines.append("## 보고 범위")
+    if scope.get("root_page_id"):
+        root_label = scope.get("page_url") or scope.get("root_page_id")
+        lines.append(f"- 기준 페이지: {root_label}")
+    if scope.get("updated_from") or scope.get("updated_to"):
+        lines.append(f"- 업데이트 기간: {scope.get('updated_from') or '시작 미지정'} ~ {scope.get('updated_to') or '종료 미지정'}")
+    elif scope.get("days"):
+        lines.append(f"- 업데이트 기간: 최근 {scope.get('days')}일")
+    if scope.get("contributors"):
+        lines.append(f"- 대상 인물: {scope.get('contributors')}")
+    lines.append(f"- 수집 문서: {len(pages)}건")
+    if warnings:
+        lines.append("- 수집 경고가 있어 누락 가능성을 함께 확인해야 합니다.")
+    lines.append("")
+
+    lines.append("## 이번 주 핵심 요약")
+    if scored_pages:
+        for item in scored_pages[:5]:
+            lines.append(f"- **{item['title']}**: {', '.join(item.get('evidence', [])[:2]) or '변경 근거 확인 필요'}")
+    else:
+        lines.append("- 조건에 맞는 Confluence 문서를 찾지 못했습니다.")
+    lines.append("")
+
+    topic_lines = build_topic_insight_lines(insights_payload, review_payload, "change-tracking")
+    if topic_lines:
+        lines.extend(topic_lines)
+
+    lines.append("## 인물별 활동")
+    contributor_pages: Dict[str, List[Dict[str, Any]]] = {}
+    for page in pages:
+        matched = page.get("matched_contributors") or page.get("recent_contributors", [])[:3]
+        for contributor_id in matched:
+            contributor_pages.setdefault(contributor_id, []).append(page)
+    if contributor_pages:
+        for contributor_id, contributor_page_list in sorted(contributor_pages.items(), key=lambda item: len(item[1]), reverse=True):
+            lines.append(f"### {person_label(contributor_id, people_by_id)}")
+            for page in sorted(contributor_page_list, key=lambda item: item.get("updated_at") or "", reverse=True)[:8]:
+                updated_at = (page.get("updated_at") or "날짜 미상")[:10]
+                title = page.get("title") or "제목 없음"
+                lines.append(f"- {updated_at}: [{title}]({page.get('url')})")
+    else:
+        lines.append("- 대상 인물과 매칭되는 작성/수정 활동이 충분하지 않습니다.")
+    lines.append("")
+
+    lines.append("## 주요 변경 타임라인")
+    if timeline:
+        for event in timeline[:20]:
+            lines.append(f"- {event['summary_ko']}")
+    else:
+        lines.append("- 확인 가능한 변경 타임라인이 없습니다.")
+    lines.append("")
+
+    lines.append("## 문서별 상세")
+    lines.append("| 문서명 | 최근 수정일 | 대상 인물 매칭 | 최신성 | 판단 근거 |")
+    lines.append("|---|---|---|---|---|")
+    page_lookup = {page.get("page_id"): page for page in pages}
+    for item in scored_pages:
+        page = page_lookup.get(item["page_id"], {})
+        matched = page.get("matched_contributors") or item.get("recent_contributors", [])[:2]
+        matched_labels = ", ".join(person_label(account_id, people_by_id) for account_id in matched) or "정보 부족"
+        evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
+        lines.append(
+            f"| {item['title']} | {item.get('updated_at') or '-'} | {matched_labels} | {level_label(item['freshness_score'])} | {evidence} |"
+        )
+    lines.append("")
+
+    lines.append("## 다음 주 확인할 점")
+    follow_ups: List[str] = []
+    for item in scored_pages[:5]:
+        if item.get("risk_notes"):
+            follow_ups.append(f"{item['title']}: {item['risk_notes'][0]}")
+    if warnings:
+        follow_ups.append("API 수집 경고가 있었으므로 중요한 문서는 Confluence에서 직접 한 번 더 확인하세요.")
+    if not follow_ups:
+        follow_ups.append("조건에 맞는 문서는 큰 위험 신호 없이 정리되었습니다.")
+    for item in follow_ups[:8]:
+        lines.append(f"- {item}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def build_markdown_onboarding(
     meta: Dict[str, Any],
     pages: List[Dict[str, Any]],
@@ -920,6 +1029,7 @@ def build_markdown(
     warnings: List[str],
     insights_payload: Optional[Dict[str, Any]] = None,
     review_payload: Optional[Dict[str, Any]] = None,
+    people_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
     purpose: str = "general",
 ) -> str:
     builder_args = (
@@ -929,6 +1039,8 @@ def build_markdown(
     )
     if purpose == "change-tracking":
         return build_markdown_change_tracking(*builder_args)
+    if purpose == "weekly-report":
+        return build_markdown_weekly_report(*builder_args, people_by_id=people_by_id)
     if purpose == "onboarding":
         return build_markdown_onboarding(*builder_args)
     return build_markdown_general(*builder_args)
@@ -1111,6 +1223,7 @@ def main() -> int:
         warnings,
         insights_payload,
         review_payload,
+        people_by_id=people_by_id,
         purpose=args.purpose,
     )
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)

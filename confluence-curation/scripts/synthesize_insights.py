@@ -14,6 +14,7 @@ SYNTHESIS_STRATEGIES = {
     "briefing-synthesis",
     "action-heavy-synthesis",
 }
+PURPOSES = ["general", "change-tracking", "onboarding", "weekly-report"]
 
 
 def iso_now() -> str:
@@ -26,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-actions", type=int, default=3)
     parser.add_argument("--max-snippets", type=int, default=3)
-    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--purpose", default="general", choices=PURPOSES)
     parser.add_argument("--strategy", default="balanced-synthesis", choices=sorted(SYNTHESIS_STRATEGIES))
     return parser.parse_args()
 
@@ -38,6 +39,10 @@ def read_json(path: str) -> Dict[str, Any]:
 
 def confidence_rank(level: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(level, 0)
+
+
+def is_change_purpose(purpose: str) -> bool:
+    return purpose in {"change-tracking", "weekly-report"}
 
 
 def summarize_candidate(candidate: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -74,7 +79,7 @@ def derive_conclusion(pack: Dict[str, Any], purpose: str = "general", strategy: 
     stale = pack.get("stale_candidate")
     recent_changes = pack.get("recent_changes", [])
 
-    if purpose == "change-tracking":
+    if is_change_purpose(purpose):
         change_count = len(recent_changes)
         if current and change_count > 0:
             if strategy == "action-heavy-synthesis":
@@ -154,7 +159,7 @@ def derive_actions(
     maintainers = pack.get("maintainer_signals", [])
     recent_changes = pack.get("recent_changes", [])
 
-    if purpose == "change-tracking":
+    if is_change_purpose(purpose):
         if recent_changes:
             actions.append("이 주제의 변경 활동을 주기적으로 모니터링하세요.")
         if maintainers:
@@ -262,7 +267,7 @@ def synthesize_topic(
         "current_reference": summarize_candidate(pack.get("current_candidate")),
         "background_reference": summarize_candidate(pack.get("trusted_candidate")),
         "stale_reference": summarize_candidate(pack.get("stale_candidate")),
-        "recent_change_summary": derive_change_summary(pack) if purpose != "change-tracking" else [
+        "recent_change_summary": derive_change_summary(pack) if not is_change_purpose(purpose) else [
             (change.get("summary") or "").strip()
             for change in pack.get("recent_changes", [])[:10]
             if (change.get("summary") or "").strip()
