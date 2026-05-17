@@ -57,6 +57,13 @@ def assert_report_contents(report_path: Path, purpose: str = "general") -> None:
             "## 변경 주체 분석",
             "결론:",
         ]
+    elif purpose == "weekly-report":
+        required_fragments = [
+            "## 보고 범위",
+            "## 이번 주 핵심 요약",
+            "## 인물별 활동",
+            "## 다음 주 확인할 점",
+        ]
     elif purpose == "onboarding":
         required_fragments = [
             "## 추천 읽기 순서",
@@ -466,7 +473,7 @@ def main() -> int:
     assert_legacy_report_contents(workdir / "legacy-report.md")
 
     # -- purpose-specific report tests --
-    for purpose in ["change-tracking", "onboarding"]:
+    for purpose in ["change-tracking", "onboarding", "weekly-report"]:
         purpose_report = workdir / f"report-{purpose}.md"
         purpose_insights = workdir / f"insights-{purpose}.json"
         purpose_review = workdir / f"review-{purpose}.json"
@@ -557,7 +564,7 @@ def main() -> int:
 
     print(
         "Confluence 인사이트 파이프라인 스모크 테스트가 통과했습니다 "
-        "(legacy + staged + orchestrated default/alternate + change-tracking + onboarding)."
+        "(legacy + staged + orchestrated default/alternate + change-tracking + onboarding + weekly-report)."
     )
     return 0
 

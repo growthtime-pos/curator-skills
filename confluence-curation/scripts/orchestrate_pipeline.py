@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--purpose",
         default="general",
-        choices=["general", "change-tracking", "onboarding"],
+        choices=["general", "change-tracking", "onboarding", "weekly-report"],
         help="기본 목적 프로필",
     )
     parser.add_argument(
@@ -91,11 +91,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-token")
     parser.add_argument("--password")
     parser.add_argument("--space-key")
+    parser.add_argument("--page-url")
     parser.add_argument("--root-page-id")
+    parser.add_argument("--include-root-page", action="store_true")
     parser.add_argument("--all-spaces", action="store_true")
     parser.add_argument("--query")
     parser.add_argument("--label")
     parser.add_argument("--days", type=int)
+    parser.add_argument("--updated-from")
+    parser.add_argument("--updated-to")
+    parser.add_argument("--contributors")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--include-body", action="store_true")
     parser.add_argument("--insecure", action="store_true")
@@ -454,8 +459,12 @@ def build_fetch_command(args: argparse.Namespace, output_path: str) -> List[str]
         command.extend(["--password", args.password])
     if args.space_key:
         command.extend(["--space-key", args.space_key])
+    if args.page_url:
+        command.extend(["--page-url", args.page_url])
     if args.root_page_id:
         command.extend(["--root-page-id", args.root_page_id])
+    if args.include_root_page:
+        command.append("--include-root-page")
     if args.all_spaces:
         command.append("--all-spaces")
     if args.query:
@@ -464,6 +473,12 @@ def build_fetch_command(args: argparse.Namespace, output_path: str) -> List[str]
         command.extend(["--label", args.label])
     if args.days is not None:
         command.extend(["--days", str(args.days)])
+    if args.updated_from:
+        command.extend(["--updated-from", args.updated_from])
+    if args.updated_to:
+        command.extend(["--updated-to", args.updated_to])
+    if args.contributors:
+        command.extend(["--contributors", args.contributors])
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])
     if args.include_body:

@@ -23,6 +23,7 @@ VALIDATION_STRATEGIES = {
     "freshness-validator",
     "executive-validator",
 }
+PURPOSES = ["general", "change-tracking", "onboarding", "weekly-report"]
 
 
 def iso_now() -> str:
@@ -33,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run second-pass review over synthesized Confluence insights.")
     parser.add_argument("--input", required=True, help="insights.json from synthesize_insights.py")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--purpose", default="general", choices=["general", "change-tracking", "onboarding"])
+    parser.add_argument("--purpose", default="general", choices=PURPOSES)
     parser.add_argument("--strategy", default="balanced-validator", choices=sorted(VALIDATION_STRATEGIES))
     return parser.parse_args()
 
@@ -45,6 +46,10 @@ def read_json(path: str) -> Dict[str, Any]:
 
 def confidence_rank(level: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(level, 0)
+
+
+def is_change_purpose(purpose: str) -> bool:
+    return purpose in {"change-tracking", "weekly-report"}
 
 
 def freshness_review(insight: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,7 +234,7 @@ def review_topic(
         reviews.append(freshness_review(insight))
     elif strategy == "executive-validator":
         reviews.append(executive_review(insight))
-    elif purpose == "change-tracking":
+    elif is_change_purpose(purpose):
         reviews.append(freshness_review(insight))
     elif purpose == "onboarding":
         reviews.append(executive_review(insight))

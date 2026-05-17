@@ -146,6 +146,7 @@ python3 confluence-curation/scripts/curate_confluence.py \
 | 일반 큐레이션 | `general` (기본값) | 문서 랭킹, 주제별 인사이트, 변경 흐름 |
 | 변경 추적 + 트렌드 | `change-tracking` | 트렌드 신호, 변경 타임라인, 변경 주체 분석 |
 | 온보딩/학습 | `onboarding` | 추천 읽기 순서, 핵심 요약, 배경 문맥, 문서 맵 |
+| 주간보고 | `weekly-report` | 지정 기간/인물의 변경 문서 요약, 인물별 활동, 다음 주 확인점 |
 
 ```bash
 # 변경 추적 목적으로 파이프라인 실행
@@ -156,6 +157,18 @@ python3 confluence-curation/scripts/review_insights.py \
 python3 confluence-curation/scripts/curate_confluence.py \
   --input /tmp/merged.json --insights-input /tmp/insights.json \
   --review-input /tmp/review.json --output /tmp/report.md --purpose change-tracking
+
+# 특정 Confluence 페이지 트리에서 특정 인물들의 주간보고 생성
+python3 confluence-curation/scripts/orchestrate_pipeline.py \
+  --page-url "https://wiki.example.com/spaces/TEAM/pages/123456/Weekly" \
+  --include-root-page \
+  --updated-from 2026-05-04 \
+  --updated-to 2026-05-10 \
+  --contributors "홍길동,kim@example.com" \
+  --include-body \
+  --purpose weekly-report \
+  --output-dir /tmp/weekly-report \
+  --non-interactive
 ```
 
 ## 파이프라인 아키텍처
@@ -232,6 +245,7 @@ curator-skills/
 │       ├── purposes/                  # 목적별 출력 템플릿
 │       │   ├── _base.md               # 공통 어투·상태 라벨 규칙
 │       │   ├── change-tracking.md     # 변경 추적 + 트렌드 감지
+│       │   ├── weekly-report.md       # 지정 기간/인물 주간보고
 │       │   └── onboarding.md          # 온보딩/학습
 │       ├── implementation-roadmap.md  # 구현 로드맵
 │       └── staged-pipeline-release-notes.md  # 릴리즈 노트

@@ -9,6 +9,7 @@
       "default_method_by_purpose": {
         "general": "infer-expand",
         "change-tracking": "infer-expand",
+        "weekly-report": "infer-expand",
         "onboarding": "infer-only"
       },
       "methods": [
@@ -40,6 +41,7 @@
       "default_method_by_purpose": {
         "general": "standard-extract",
         "change-tracking": "standard-extract",
+        "weekly-report": "standard-extract",
         "onboarding": "dense-extract"
       },
       "methods": [
@@ -65,6 +67,7 @@
       "default_method_by_purpose": {
         "general": "heuristic-cluster",
         "change-tracking": "hierarchy-first-cluster",
+        "weekly-report": "hierarchy-first-cluster",
         "onboarding": "keyword-heavy-cluster"
       },
       "methods": [
@@ -96,6 +99,7 @@
       "default_method_by_purpose": {
         "general": "balanced-analysis",
         "change-tracking": "change-first-analysis",
+        "weekly-report": "change-first-analysis",
         "onboarding": "trust-first-analysis"
       },
       "methods": [
@@ -127,6 +131,7 @@
       "default_method_by_purpose": {
         "general": "balanced-synthesis",
         "change-tracking": "action-heavy-synthesis",
+        "weekly-report": "action-heavy-synthesis",
         "onboarding": "briefing-synthesis"
       },
       "methods": [
@@ -158,6 +163,7 @@
       "default_method_by_purpose": {
         "general": "balanced-validator",
         "change-tracking": "strict-validator",
+        "weekly-report": "strict-validator",
         "onboarding": "executive-validator"
       },
       "methods": [

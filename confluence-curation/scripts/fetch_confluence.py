@@ -50,11 +50,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-token", default=config_str(config, "api_token", "CONFLUENCE_API_TOKEN"))
     parser.add_argument("--password", default=config_str(config, "password", "CONFLUENCE_PASSWORD"))
     parser.add_argument("--space-key")
+    parser.add_argument("--page-url", help="Confluence page URL. pageId 또는 /pages/{id}/ 형태에서 page id를 추출합니다.")
     parser.add_argument("--root-page-id")
+    parser.add_argument("--include-root-page", action="store_true", help="--root-page-id/--page-url 수집 시 루트 페이지 자체도 포함합니다.")
     parser.add_argument("--all-spaces", action="store_true", help="Search across all accessible spaces.")
     parser.add_argument("--query", help="Keyword query to filter relevant pages by title or body excerpt.")
     parser.add_argument("--label")
     parser.add_argument("--days", type=int)
+    parser.add_argument("--updated-from", help="Inclusive updated-at lower bound, YYYY-MM-DD or ISO datetime.")
+    parser.add_argument("--updated-to", help="Inclusive updated-at upper bound, YYYY-MM-DD or ISO datetime.")
+    parser.add_argument(
+        "--contributors",
+        help="Comma-separated contributor filters. Matches account id, display/public name, or email.",
+    )
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--include-body", action="store_true")
     insecure_default = config.get("insecure", False)
@@ -89,6 +97,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    if args.page_url and not args.root_page_id:
+        args.root_page_id = extract_page_id_from_url(args.page_url)
+        if not args.root_page_id:
+            parser.error("--page-url 에서 page id를 추출하지 못했습니다. --root-page-id 를 직접 지정하세요.")
     args._config_path = resolved_config.path
     args._config_source = resolved_config.source
     args._config_used = resolved_config.found
@@ -107,6 +119,13 @@ def parse_args() -> argparse.Namespace:
         )
     if not args.space_key and not args.root_page_id and not args.all_spaces:
         parser.error("--space-key, --root-page-id, or --all-spaces is required")
+    try:
+        if args.updated_from:
+            parse_datetime_bound(args.updated_from, end_of_day=False)
+        if args.updated_to:
+            parse_datetime_bound(args.updated_to, end_of_day=True)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > MAX_RPS:
         parser.error("--rate-limit-rps must be > 0 and <= 1.0")
     return args
@@ -265,9 +284,45 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
     fixed = value.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(fixed)
+        parsed = datetime.fromisoformat(fixed)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def parse_datetime_bound(value: str, end_of_day: bool = False) -> datetime:
+    stripped = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stripped):
+        suffix = "T23:59:59.999999+00:00" if end_of_day else "T00:00:00+00:00"
+        stripped = f"{stripped}{suffix}"
+    parsed = parse_datetime(stripped)
+    if not parsed:
+        raise ValueError(f"Invalid datetime bound: {value}")
+    return parsed
+
+
+def extract_page_id_from_url(page_url: str) -> Optional[str]:
+    parsed = parse.urlparse(page_url)
+    query = parse.parse_qs(parsed.query)
+    for key in ("pageId", "pageId[]"):
+        values = query.get(key)
+        if values and values[0].isdigit():
+            return values[0]
+
+    patterns = [
+        r"/pages/(\d+)(?:/|$)",
+        r"/pageId/(\d+)(?:/|$)",
+        r"[?&]pageId=(\d+)(?:&|$)",
+    ]
+    haystacks = [parsed.path, page_url]
+    for haystack in haystacks:
+        for pattern in patterns:
+            match = re.search(pattern, haystack)
+            if match:
+                return match.group(1)
+    return None
 
 
 def build_cache_key(args: argparse.Namespace, deployment_type: str) -> str:
@@ -275,11 +330,16 @@ def build_cache_key(args: argparse.Namespace, deployment_type: str) -> str:
         "base_url": args.base_url.rstrip("/"),
         "deployment_type": deployment_type,
         "space_key": args.space_key,
+        "page_url": args.page_url,
         "root_page_id": args.root_page_id,
+        "include_root_page": args.include_root_page,
         "all_spaces": args.all_spaces,
         "query": args.query,
         "label": args.label,
         "days": args.days,
+        "updated_from": args.updated_from,
+        "updated_to": args.updated_to,
+        "contributors": args.contributors,
         "limit": args.limit,
         "include_body": args.include_body,
     }
@@ -530,6 +590,15 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
     expand_fields = ["version", "history", "ancestors", "metadata.labels"]
     if args.include_body:
         expand_fields.append("body.storage")
+    if args.root_page_id and args.include_root_page:
+        try:
+            root_page = client.get_json(
+                f"/rest/api/content/{args.root_page_id}",
+                {"expand": ",".join(expand_fields)},
+            )
+            pages.append(root_page)
+        except FetchError as exc:
+            client.warnings.append(f"루트 페이지 {args.root_page_id} 를 가져오지 못했습니다: {exc}")
     if args.query:
         path = "/rest/api/content/search"
         cql_parts = ["type = page"]
@@ -568,7 +637,16 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
         if len(batch) < limit:
             break
         start += len(batch)
-    return pages[: args.limit]
+    deduped: List[Dict[str, Any]] = []
+    seen_page_ids = set()
+    for page in pages:
+        page_id = str(page.get("id") or "")
+        if page_id and page_id in seen_page_ids:
+            continue
+        if page_id:
+            seen_page_ids.add(page_id)
+        deduped.append(page)
+    return deduped[: args.limit]
 
 
 def fetch_versions(client: ConfluenceClient, page_id: str, warnings: List[str]) -> List[Dict[str, Any]]:
@@ -700,22 +778,22 @@ def fetch_person(client: ConfluenceClient, deployment_type: str, account_id: str
     }
 
 
-def page_matches_filters(page: Dict[str, Any], days: Optional[int], label: Optional[str], query: Optional[str]) -> bool:
-    if days:
-        updated = parse_datetime(page.get("version", {}).get("when"))
-        if updated and updated < datetime.now(timezone.utc) - timedelta(days=days):
+def page_matches_filters(page: Dict[str, Any], args: argparse.Namespace) -> bool:
+    updated = parse_datetime(page.get("version", {}).get("when"))
+    if args.days:
+        if updated and updated < datetime.now(timezone.utc) - timedelta(days=args.days):
             return False
-    if label:
+    if args.label:
         labels = ((page.get("metadata", {}) or {}).get("labels", {}) or {}).get("results", [])
         names = {item.get("name") for item in labels}
-        if label not in names:
+        if args.label not in names:
             return False
-    if query:
+    if args.query:
         haystacks = [
             (page.get("title") or "").lower(),
             strip_html(((((page.get("body") or {}).get("storage") or {}).get("value"))) or "") or "",
         ]
-        terms = [term.strip().lower() for term in re.split(r"\s*\|\s*|,", query) if term.strip()]
+        terms = [term.strip().lower() for term in re.split(r"\s*\|\s*|,", args.query) if term.strip()]
         if terms and not any(term in hay for term in terms for hay in haystacks):
             return False
     return True
@@ -730,7 +808,7 @@ def normalize_pages(
     pages: List[Dict[str, Any]] = []
     contributor_ids: List[str] = []
     for page in raw_pages:
-        if not page_matches_filters(page, args.days, args.label, args.query):
+        if not page_matches_filters(page, args):
             continue
         version = page.get("version", {}) or {}
         history = page.get("history", {}) or {}
@@ -819,6 +897,112 @@ def build_relationships(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return relationships
 
 
+def parse_contributor_filters(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip().lower() for item in re.split(r"\s*,\s*|\s*\|\s*", value) if item.strip()]
+
+
+def person_match_text(person: Dict[str, Any]) -> str:
+    fields = [
+        person.get("account_id"),
+        person.get("display_name"),
+        person.get("public_name"),
+        person.get("email"),
+    ]
+    profile = person.get("profile") or {}
+    fields.extend(
+        [
+            profile.get("job_title_raw"),
+            profile.get("department_raw"),
+            profile.get("organization_raw"),
+        ]
+    )
+    return " ".join(str(field).lower() for field in fields if field)
+
+
+def page_contributor_ids(page: Dict[str, Any]) -> List[str]:
+    ids = [
+        page.get("created_by_account_id"),
+        page.get("last_updated_by_account_id"),
+        *page.get("recent_contributors", []),
+    ]
+    ids.extend(item.get("account_id") for item in page.get("version_events", []))
+    return list(dict.fromkeys(str(item) for item in ids if item))
+
+
+def timestamp_in_updated_window(value: Optional[str], args: argparse.Namespace) -> bool:
+    updated = parse_datetime(value)
+    if not updated:
+        return False
+    if args.updated_from and updated < parse_datetime_bound(args.updated_from, end_of_day=False):
+        return False
+    if args.updated_to and updated > parse_datetime_bound(args.updated_to, end_of_day=True):
+        return False
+    return True
+
+
+def page_matches_updated_window(page: Dict[str, Any], args: argparse.Namespace) -> bool:
+    if not args.updated_from and not args.updated_to:
+        return True
+    if timestamp_in_updated_window(page.get("updated_at"), args):
+        return True
+    return any(
+        timestamp_in_updated_window(event.get("updated_at"), args)
+        for event in page.get("version_events", [])
+    )
+
+
+def filter_pages_by_updated_window(pages: List[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
+    if not args.updated_from and not args.updated_to:
+        return pages
+    filtered: List[Dict[str, Any]] = []
+    for page in pages:
+        if page_matches_updated_window(page, args):
+            page.setdefault("discovery_reasons", [])
+            page["discovery_reasons"].append("지정 업데이트 기간에 변경")
+            filtered.append(page)
+    return filtered
+
+
+def filter_pages_by_contributors(
+    pages: List[Dict[str, Any]],
+    people: List[Dict[str, Any]],
+    contributor_filters: List[str],
+    warnings: List[str],
+) -> List[Dict[str, Any]]:
+    if not contributor_filters:
+        return pages
+
+    people_by_id = {str(person.get("account_id")): person for person in people if person and person.get("account_id")}
+    matched_account_ids = {
+        account_id
+        for account_id, person in people_by_id.items()
+        if any(token in person_match_text(person) for token in contributor_filters)
+    }
+    matched_account_ids.update(
+        account_id
+        for account_id in people_by_id
+        if any(token == account_id.lower() for token in contributor_filters)
+    )
+
+    if not matched_account_ids:
+        warnings.append("지정한 contributor 필터와 일치하는 Confluence 사용자 프로필을 찾지 못했습니다.")
+        return []
+
+    filtered: List[Dict[str, Any]] = []
+    for page in pages:
+        contributors = set(page_contributor_ids(page))
+        matched = sorted(contributors & matched_account_ids)
+        if not matched:
+            continue
+        page["matched_contributors"] = matched
+        page.setdefault("discovery_reasons", [])
+        page["discovery_reasons"].append("지정 contributor 활동으로 포함")
+        filtered.append(page)
+    return filtered
+
+
 def estimate_runtime_warning(request_count: int, rps: float, warnings: List[str]) -> None:
     seconds = request_count / rps if rps else 0
     if seconds >= 60:
@@ -865,6 +1049,12 @@ def main() -> int:
 
     raw_pages = fetch_page_batch(client, args)
     pages, contributor_ids = normalize_pages(raw_pages, client, args, warnings)
+    pages = filter_pages_by_updated_window(pages, args)
+    contributor_ids = [
+        account_id
+        for page in pages
+        for account_id in page_contributor_ids(page)
+    ]
 
     people = []
     seen_people = set()
@@ -874,6 +1064,20 @@ def main() -> int:
         seen_people.add(account_id)
         people.append(fetch_person(client, deployment_type, account_id, warnings))
     people = [item for item in people if item]
+
+    contributor_filters = parse_contributor_filters(args.contributors)
+    if contributor_filters:
+        pages = filter_pages_by_contributors(pages, people, contributor_filters, warnings)
+        remaining_people_ids = {
+            account_id
+            for page in pages
+            for account_id in page_contributor_ids(page)
+        }
+        people = [
+            person
+            for person in people
+            if person and str(person.get("account_id")) in remaining_people_ids
+        ]
 
     relationships = build_relationships(pages)
     estimate_runtime_warning(client.request_count, args.rate_limit_rps, warnings)
@@ -892,10 +1096,15 @@ def main() -> int:
             "rate_limit_rps": args.rate_limit_rps,
             "scope": {
                 "space_key": args.space_key,
+                "page_url": args.page_url,
                 "root_page_id": args.root_page_id,
+                "include_root_page": args.include_root_page,
                 "all_spaces": args.all_spaces,
                 "query": args.query,
                 "days": args.days,
+                "updated_from": args.updated_from,
+                "updated_to": args.updated_to,
+                "contributors": args.contributors,
                 "limit": args.limit,
             },
             "include_body": args.include_body,
