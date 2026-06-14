@@ -110,6 +110,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--rate-limit-rps", type=float)
+    parser.add_argument("--rate-limit-mode", choices=["interval", "window"])
+    parser.add_argument("--rate-limit-window-requests", type=int)
+    parser.add_argument("--rate-limit-window-seconds", type=float)
     parser.add_argument("--report-output")
     parser.add_argument("--summary-output")
     parser.add_argument("--brief-output")
@@ -497,6 +500,12 @@ def build_fetch_command(args: argparse.Namespace, output_path: str) -> List[str]
         command.append("--cache-only")
     if args.rate_limit_rps is not None:
         command.extend(["--rate-limit-rps", str(args.rate_limit_rps)])
+    if args.rate_limit_mode:
+        command.extend(["--rate-limit-mode", args.rate_limit_mode])
+    if args.rate_limit_window_requests is not None:
+        command.extend(["--rate-limit-window-requests", str(args.rate_limit_window_requests)])
+    if args.rate_limit_window_seconds is not None:
+        command.extend(["--rate-limit-window-seconds", str(args.rate_limit_window_seconds)])
     return command
 
 
@@ -603,6 +612,12 @@ def run_pre_analysis(
             command.append("--cache-only")
         if args.rate_limit_rps is not None:
             command.extend(["--rate-limit-rps", str(args.rate_limit_rps)])
+        if args.rate_limit_mode:
+            command.extend(["--rate-limit-mode", args.rate_limit_mode])
+        if args.rate_limit_window_requests is not None:
+            command.extend(["--rate-limit-window-requests", str(args.rate_limit_window_requests)])
+        if args.rate_limit_window_seconds is not None:
+            command.extend(["--rate-limit-window-seconds", str(args.rate_limit_window_seconds)])
         if args.insecure:
             command.append("--insecure")
         run_step(command, root)

@@ -112,8 +112,11 @@
 
 ## Test Commands
 
-- No automated tests are checked in on the current branch.
-- Use targeted smoke tests instead of inventing a fake test harness.
+- A small stdlib `unittest` check exists for fetch rate limiting behavior:
+  ```bash
+  python3 confluence-curation/scripts/test_rate_limiter.py
+  ```
+- Use targeted smoke tests instead of inventing a broad fake test harness.
 - Smoke test fetcher argument validation:
   ```bash
   python3 confluence-curation/scripts/fetch_confluence.py --help
@@ -153,6 +156,10 @@
   ```bash
   python3 confluence-curation/scripts/smoke_pipeline.py
   ```
+- Rate limiter unit test:
+  ```bash
+  python3 confluence-curation/scripts/test_rate_limiter.py
+  ```
 - Syntax-check a single file:
   ```bash
   python3 -m py_compile confluence-curation/scripts/confluence_config.py
@@ -180,7 +187,7 @@
 
 ## Running A Single Test
 
-- There is no single-test command in the repo because there is no checked-in unit test suite.
+- For rate limiter behavior, use `python3 confluence-curation/scripts/test_rate_limiter.py`.
 - For a single-file validation, use `python3 -m py_compile <file>`.
 - For a single behavior check, run the specific script with the smallest relevant CLI invocation, including `configure_confluence.py status --json` for bootstrap behavior.
 - For a single end-to-end staged-pipeline regression, use `python3 confluence-curation/scripts/smoke_pipeline.py`.

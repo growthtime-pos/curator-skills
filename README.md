@@ -167,6 +167,9 @@ python3 confluence-curation/scripts/orchestrate_pipeline.py \
   --contributors "홍길동,kim@example.com" \
   --include-body \
   --purpose weekly-report \
+  --rate-limit-mode window \
+  --rate-limit-window-requests 10 \
+  --rate-limit-window-seconds 60 \
   --output-dir /tmp/weekly-report \
   --non-interactive
 ```

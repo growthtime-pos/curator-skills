@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from html import unescape
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib import error, parse, request
 
 from confluence_config import config_str, detect_deployment_type, resolve_saved_config
@@ -95,6 +95,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.getenv("CONFLUENCE_RATE_LIMIT_RPS") or config.get("rate_limit_rps", 1.0)),
     )
+    parser.add_argument(
+        "--rate-limit-mode",
+        default=os.getenv("CONFLUENCE_RATE_LIMIT_MODE") or config.get("rate_limit_mode", "interval"),
+        choices=["interval", "window"],
+        help="interval은 요청 간격 제한, window는 제한 수만큼 먼저 요청한 뒤 window 리셋까지 대기합니다.",
+    )
+    parser.add_argument(
+        "--rate-limit-window-requests",
+        type=int,
+        default=int(os.getenv("CONFLUENCE_RATE_LIMIT_WINDOW_REQUESTS") or config.get("rate_limit_window_requests", 10)),
+    )
+    parser.add_argument(
+        "--rate-limit-window-seconds",
+        type=float,
+        default=float(os.getenv("CONFLUENCE_RATE_LIMIT_WINDOW_SECONDS") or config.get("rate_limit_window_seconds", 60)),
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.page_url and not args.root_page_id:
@@ -128,6 +144,10 @@ def parse_args() -> argparse.Namespace:
         parser.error(str(exc))
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > MAX_RPS:
         parser.error("--rate-limit-rps must be > 0 and <= 1.0")
+    if args.rate_limit_window_requests <= 0:
+        parser.error("--rate-limit-window-requests must be > 0")
+    if args.rate_limit_window_seconds <= 0:
+        parser.error("--rate-limit-window-seconds must be > 0")
     return args
 
 
@@ -135,17 +155,136 @@ class FetchError(RuntimeError):
     pass
 
 
+def _parse_header_float(headers: Mapping[str, Any], name: str) -> Optional[float]:
+    value = headers.get(name)
+    if value is None:
+        value = headers.get(name.lower())
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _parse_header_int(headers: Mapping[str, Any], name: str) -> Optional[int]:
+    value = _parse_header_float(headers, name)
+    if value is None:
+        return None
+    return int(value)
+
+
 class RateLimiter:
-    def __init__(self, rps: float) -> None:
+    def __init__(
+        self,
+        mode: str,
+        rps: float,
+        window_requests: int,
+        window_seconds: float,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.mode = mode
         self.min_interval = 1.0 / rps
-        self._last_time = 0.0
+        self.window_requests = window_requests
+        self.window_seconds = window_seconds
+        self._remaining = window_requests
+        self._window_reset_at = monotonic() + window_seconds
+        self._last_time: Optional[float] = None
+        self._retry_after: Optional[float] = None
+        self._monotonic = monotonic
+        self._sleep = sleep
+
+    @classmethod
+    def interval(
+        cls,
+        rps: float,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> "RateLimiter":
+        return cls("interval", rps, 1, 1.0, monotonic, sleep)
+
+    @classmethod
+    def window(
+        cls,
+        window_requests: int,
+        window_seconds: float,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> "RateLimiter":
+        return cls("window", MAX_RPS, window_requests, window_seconds, monotonic, sleep)
+
+    def _sleep_for(self, seconds: float) -> None:
+        if seconds > 0:
+            self._sleep(seconds)
+
+    def _reset_window_if_needed(self) -> None:
+        now = self._monotonic()
+        if now >= self._window_reset_at:
+            self._remaining = self.window_requests
+            self._window_reset_at = now + self.window_seconds
 
     def wait(self) -> None:
-        now = time.monotonic()
-        delay = self.min_interval - (now - self._last_time)
-        if delay > 0:
-            time.sleep(delay)
-        self._last_time = time.monotonic()
+        if self.mode == "window":
+            self._wait_window()
+            return
+        self._wait_interval()
+
+    def _wait_interval(self) -> None:
+        now = self._monotonic()
+        if self._last_time is not None:
+            delay = self.min_interval - (now - self._last_time)
+            self._sleep_for(delay)
+        self._last_time = self._monotonic()
+
+    def _wait_window(self) -> None:
+        self._reset_window_if_needed()
+        if self._remaining <= 0:
+            self._sleep_for(self._window_reset_at - self._monotonic())
+            self._remaining = self.window_requests
+            self._window_reset_at = self._monotonic() + self.window_seconds
+        self._wait_interval()
+        self._reset_window_if_needed()
+        if self._remaining <= 0:
+            self._sleep_for(self._window_reset_at - self._monotonic())
+            self._remaining = self.window_requests
+            self._window_reset_at = self._monotonic() + self.window_seconds
+        self._remaining -= 1
+
+    def update_from_headers(self, headers: Mapping[str, Any]) -> None:
+        retry_after = _parse_header_float(headers, "Retry-After")
+        if retry_after and retry_after > 0:
+            self._retry_after = retry_after
+
+        if self.mode != "window":
+            return
+
+        limit = _parse_header_int(headers, "X-RateLimit-Limit")
+        fill_rate = _parse_header_int(headers, "X-RateLimit-FillRate")
+        interval = _parse_header_float(headers, "X-RateLimit-Interval-Seconds")
+        remaining = _parse_header_int(headers, "X-RateLimit-Remaining")
+
+        if fill_rate and fill_rate > 0:
+            self.window_requests = fill_rate
+        elif limit and limit > 0:
+            self.window_requests = limit
+        if interval and interval > 0:
+            self.window_seconds = interval
+
+        if remaining is not None:
+            self._remaining = max(0, remaining)
+            if self._remaining == 0:
+                self._window_reset_at = self._monotonic() + (retry_after if retry_after and retry_after > 0 else self.window_seconds)
+
+    def wait_for_retry_after(self) -> None:
+        if self._retry_after is None:
+            return
+        delay = self._retry_after
+        self._retry_after = None
+        self._sleep_for(delay)
+        if self.mode == "window":
+            self._remaining = self.window_requests
+            self._window_reset_at = self._monotonic() + self.window_seconds
 
 
 @dataclass
@@ -200,11 +339,16 @@ class ConfluenceClient:
             )
             try:
                 with request.urlopen(req, timeout=30, context=self.ssl_context) as resp:
+                    self.limiter.update_from_headers(resp.headers)
                     charset = resp.headers.get_content_charset() or "utf-8"
                     return json.loads(resp.read().decode(charset))
             except error.HTTPError as exc:
                 if exc.code in TRANSIENT_STATUSES and attempt < 3:
-                    time.sleep((attempt + 1) * 2)
+                    retry_after = _parse_header_float(exc.headers, "Retry-After")
+                    self.limiter.update_from_headers(exc.headers)
+                    self.limiter.wait_for_retry_after()
+                    if retry_after is None:
+                        time.sleep((attempt + 1) * 2)
                     last_error = exc
                     continue
                 body = exc.read().decode("utf-8", errors="replace")
@@ -1003,8 +1147,19 @@ def filter_pages_by_contributors(
     return filtered
 
 
-def estimate_runtime_warning(request_count: int, rps: float, warnings: List[str]) -> None:
-    seconds = request_count / rps if rps else 0
+def estimate_runtime_warning(
+    request_count: int,
+    rps: float,
+    warnings: List[str],
+    mode: str = "interval",
+    window_requests: int = 1,
+    window_seconds: float = 1.0,
+) -> None:
+    if mode == "window":
+        wait_windows = max(0, (request_count - 1) // max(1, window_requests))
+        seconds = wait_windows * window_seconds
+    else:
+        seconds = request_count / rps if rps else 0
     if seconds >= 60:
         warnings.append(
             f"rate limit 정책 때문에 예상 수집 시간이 길 수 있습니다. 대략 {request_count}회 호출, 약 {int(seconds)}초 예상입니다."
@@ -1014,7 +1169,10 @@ def estimate_runtime_warning(request_count: int, rps: float, warnings: List[str]
 def main() -> int:
     args = parse_args()
     warnings: List[str] = []
-    limiter = RateLimiter(args.rate_limit_rps)
+    if args.rate_limit_mode == "window":
+        limiter = RateLimiter.window(args.rate_limit_window_requests, args.rate_limit_window_seconds)
+    else:
+        limiter = RateLimiter.interval(args.rate_limit_rps)
     deployment_type = detect_deployment_type(args.base_url, args.deployment_type)
     cache_key = build_cache_key(args, deployment_type)
     cache_path = cache_file_path(args.cache_dir, cache_key)
@@ -1080,7 +1238,14 @@ def main() -> int:
         ]
 
     relationships = build_relationships(pages)
-    estimate_runtime_warning(client.request_count, args.rate_limit_rps, warnings)
+    estimate_runtime_warning(
+        client.request_count,
+        args.rate_limit_rps,
+        warnings,
+        args.rate_limit_mode,
+        args.rate_limit_window_requests,
+        args.rate_limit_window_seconds,
+    )
 
     result = {
         "meta": {
@@ -1094,6 +1259,9 @@ def main() -> int:
                 "found": args._config_used,
             },
             "rate_limit_rps": args.rate_limit_rps,
+            "rate_limit_mode": args.rate_limit_mode,
+            "rate_limit_window_requests": args.rate_limit_window_requests,
+            "rate_limit_window_seconds": args.rate_limit_window_seconds,
             "scope": {
                 "space_key": args.space_key,
                 "page_url": args.page_url,

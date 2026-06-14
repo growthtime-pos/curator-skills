@@ -84,8 +84,12 @@ def config_str(config: Dict[str, Any], key: str, env_key: Optional[str] = None) 
 
 
 def parse_args() -> argparse.Namespace:
-    config_path = os.getenv("CONFLUENCE_CONFIG_PATH", FETCH.DEFAULT_CONFIG_PATH)
-    config = FETCH.load_saved_config(config_path)
+    config_override = os.getenv("CONFLUENCE_CONFIG_PATH")
+    resolved_config = FETCH.resolve_saved_config(
+        explicit_path=config_override,
+        explicit_source="env_path",
+    )
+    config = resolved_config.config
 
     parser = argparse.ArgumentParser(
         description="기존 Confluence 검색 결과를 바탕으로 내부 preferred space 의 연관 문서를 확장 탐색합니다."
@@ -128,14 +132,35 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.getenv("CONFLUENCE_RATE_LIMIT_RPS") or config.get("rate_limit_rps", 1.0)),
     )
+    parser.add_argument(
+        "--rate-limit-mode",
+        default=os.getenv("CONFLUENCE_RATE_LIMIT_MODE") or config.get("rate_limit_mode", "interval"),
+        choices=["interval", "window"],
+    )
+    parser.add_argument(
+        "--rate-limit-window-requests",
+        type=int,
+        default=int(os.getenv("CONFLUENCE_RATE_LIMIT_WINDOW_REQUESTS") or config.get("rate_limit_window_requests", 10)),
+    )
+    parser.add_argument(
+        "--rate-limit-window-seconds",
+        type=float,
+        default=float(os.getenv("CONFLUENCE_RATE_LIMIT_WINDOW_SECONDS") or config.get("rate_limit_window_seconds", 60)),
+    )
     insecure_default = config.get("insecure", False)
     parser.add_argument("--insecure", action="store_true", default=insecure_default)
     args = parser.parse_args()
 
-    args._config_path = config_path
-    args._config_used = bool(config)
+    args._config_path = resolved_config.path
+    args._config_source = resolved_config.source
+    args._config_used = resolved_config.found
+    args._config_load_error = resolved_config.load_error
     if args.rate_limit_rps <= 0 or args.rate_limit_rps > FETCH.MAX_RPS:
         parser.error("--rate-limit-rps must be > 0 and <= 1.0")
+    if args.rate_limit_window_requests <= 0:
+        parser.error("--rate-limit-window-requests must be > 0")
+    if args.rate_limit_window_seconds <= 0:
+        parser.error("--rate-limit-window-seconds must be > 0")
     return args
 
 
@@ -296,7 +321,10 @@ def fetch_space_pages(
     include_body: bool,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
     warnings: List[str] = []
-    limiter = FETCH.RateLimiter(args.rate_limit_rps)
+    if args.rate_limit_mode == "window":
+        limiter = FETCH.RateLimiter.window(args.rate_limit_window_requests, args.rate_limit_window_seconds)
+    else:
+        limiter = FETCH.RateLimiter.interval(args.rate_limit_rps)
     deployment_type = FETCH.detect_deployment_type(args.base_url, args.deployment_type)
     auth = FETCH.maybe_retry_with_password(args, deployment_type, limiter, warnings)
     client = FETCH.ConfluenceClient(args.base_url, auth, limiter, warnings, insecure=args.insecure)
@@ -324,7 +352,14 @@ def fetch_space_pages(
             people.append(person)
 
     links = FETCH.build_relationships(dedupe_pages(combined_for_links))
-    FETCH.estimate_runtime_warning(client.request_count, args.rate_limit_rps, warnings)
+    FETCH.estimate_runtime_warning(
+        client.request_count,
+        args.rate_limit_rps,
+        warnings,
+        args.rate_limit_mode,
+        args.rate_limit_window_requests,
+        args.rate_limit_window_seconds,
+    )
     return dedupe_pages(expanded_pages), people, links, warnings
 
 

@@ -208,6 +208,7 @@ Reference:
 - Use `--updated-from` and `--updated-to` for exact date windows; use `--days` only for rolling recent windows.
 - Use `--contributors` when the user wants pages from specific people. It matches account id, display/public name, or email against creator, recent updater, and version-history contributors.
 - Use `--include-body` when the user wants the skill to organize the content itself, not only metadata.
+- Use `--rate-limit-mode window --rate-limit-window-requests 10 --rate-limit-window-seconds 60` for Data Center instances that return `X-RateLimit-Limit: 10` and `X-RateLimit-Interval-Seconds: 60`; this allows the first window of requests to run without forcing a fixed 6-second gap.
 - Use `--cache-dir` to persist fetched results locally and reuse them later.
 - Use `--data-dir` to persist reusable page snapshots, history, and run artifacts inside the workspace.
 - Use `--cache-only` to work from saved data without making new API calls.
@@ -378,7 +379,7 @@ python3 confluence-curation/scripts/normalize_confluence.py --input data/fetch-m
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --expansion-input data/confluence-ai-expanded.json --output data/confluence.md`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose change-tracking`
 - `python3 confluence-curation/scripts/curate_confluence.py --input data/confluence.json --output data/report.md --purpose onboarding`
-- `python3 confluence-curation/scripts/orchestrate_pipeline.py --page-url "https://wiki.example.com/spaces/ENG/pages/123456/Weekly" --include-root-page --updated-from 2026-05-04 --updated-to 2026-05-10 --contributors "홍길동,kim@example.com" --include-body --purpose weekly-report --output-dir data/weekly-report --non-interactive`
+- `python3 confluence-curation/scripts/orchestrate_pipeline.py --page-url "https://wiki.example.com/spaces/ENG/pages/123456/Weekly" --include-root-page --updated-from 2026-05-04 --updated-to 2026-05-10 --contributors "홍길동,kim@example.com" --include-body --purpose weekly-report --rate-limit-mode window --rate-limit-window-requests 10 --rate-limit-window-seconds 60 --output-dir data/weekly-report --non-interactive`
 - `Use $confluence-curation to compare overlapping architecture pages and explain which page should be treated as the current working reference.`
 
 ## End-To-End Insight Pipeline Example
