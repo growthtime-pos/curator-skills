@@ -96,6 +96,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-root-page", action="store_true")
     parser.add_argument("--all-spaces", action="store_true")
     parser.add_argument("--query")
+    parser.add_argument("--include-comments", action="store_true")
+    parser.add_argument("--comments-only", action="store_true")
     parser.add_argument("--label")
     parser.add_argument("--days", type=int)
     parser.add_argument("--updated-from")
@@ -472,6 +474,10 @@ def build_fetch_command(args: argparse.Namespace, output_path: str) -> List[str]
         command.append("--all-spaces")
     if args.query:
         command.extend(["--query", args.query])
+    if args.include_comments:
+        command.append("--include-comments")
+    if args.comments_only:
+        command.append("--comments-only")
     if args.label:
         command.extend(["--label", args.label])
     if args.days is not None:

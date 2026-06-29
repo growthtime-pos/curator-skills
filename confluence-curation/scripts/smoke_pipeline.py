@@ -83,6 +83,8 @@ def assert_report_contents(report_path: Path, purpose: str = "general") -> None:
     for fragment in required_fragments:
         if fragment not in text:
             raise RuntimeError(f"최종 리포트에 필요한 문구가 없습니다 (purpose={purpose}): {fragment}")
+    if purpose == "weekly-report" and "Dana Choi" not in text:
+        raise RuntimeError("weekly-report 에 댓글 작성자 활동이 나타나지 않았습니다.")
 
 
 def assert_merge_shape(workdir: Path) -> None:
@@ -96,6 +98,27 @@ def assert_merge_shape(workdir: Path) -> None:
     page_ids = [p.get("page_id") for p in pages]
     if len(page_ids) != len(set(page_ids)):
         raise RuntimeError("병합 결과에 중복 페이지가 존재합니다.")
+    comments = merged.get("comments", [])
+    if not comments:
+        raise RuntimeError("병합 결과에 comments 배열이 유지되지 않았습니다.")
+    comment_ids = [c.get("comment_id") for c in comments]
+    if len(comment_ids) != len(set(comment_ids)):
+        raise RuntimeError("병합 결과에 중복 댓글이 존재합니다.")
+    if not any(p.get("comment_hits") for p in pages):
+        raise RuntimeError("병합 결과 페이지에 comment_hits 가 유지되지 않았습니다.")
+
+
+def assert_comment_normalization(workdir: Path) -> None:
+    normalized = read_json(workdir / "normalized.json")
+    pages = normalized.get("pages", [])
+    comment_pages = [page for page in pages if page.get("comment_hits")]
+    if not comment_pages:
+        raise RuntimeError("정규화 결과에 comment_hits 가 없습니다.")
+    first = comment_pages[0]
+    if not first.get("comment_hit_count"):
+        raise RuntimeError("정규화 결과에 comment_hit_count 가 없습니다.")
+    if not any(str(claim).startswith("댓글:") for claim in first.get("claim_candidates", [])):
+        raise RuntimeError("정규화 결과에 댓글 prefix claim 이 없습니다.")
 
 
 def assert_artifact_shapes(workdir: Path) -> None:
@@ -144,6 +167,32 @@ def assert_legacy_report_contents(report_path: Path) -> None:
     ]:
         if fragment not in text:
             raise RuntimeError(f"legacy report 에 필요한 문구가 없습니다: {fragment}")
+
+
+def assert_page_only_report_contents(report_path: Path) -> None:
+    assert_legacy_report_contents(report_path)
+    text = report_path.read_text(encoding="utf-8")
+    if "| 댓글 |" in text:
+        raise RuntimeError("page-only legacy report 에 댓글 컬럼이 나타났습니다.")
+
+
+def write_page_only_fixture(source: Path, output: Path) -> None:
+    payload = read_json(source)
+    payload.pop("comments", None)
+    scope = payload.get("meta", {}).get("scope", {})
+    scope["comment_search"] = "pages"
+    scope.pop("comment_count", None)
+    for page in payload.get("pages", []):
+        for key in [
+            "comment_hits",
+            "comment_hit_count",
+            "latest_comment_at",
+            "comment_context_excerpt",
+        ]:
+            page.pop(key, None)
+    with output.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
 
 
 def assert_orchestrator_outputs(workdir: Path, expected_cluster: str, expected_synthesize: str, expected_validate: str) -> None:
@@ -453,6 +502,7 @@ def main() -> int:
         assert_file_exists(workdir / name)
 
     assert_merge_shape(workdir)
+    assert_comment_normalization(workdir)
     assert_artifact_shapes(workdir)
     assert_feature_artifacts(workdir)
     assert_report_contents(workdir / "report.md", "general")
@@ -471,6 +521,21 @@ def main() -> int:
     )
     assert_file_exists(workdir / "legacy-report.md")
     assert_legacy_report_contents(workdir / "legacy-report.md")
+
+    page_only_fixture = workdir / "page-only-fixture.json"
+    write_page_only_fixture(fixture, page_only_fixture)
+    run_step(
+        [
+            python,
+            "confluence-curation/scripts/curate_confluence.py",
+            "--input",
+            str(page_only_fixture),
+            "--output",
+            str(workdir / "page-only-legacy-report.md"),
+        ],
+        root,
+    )
+    assert_page_only_report_contents(workdir / "page-only-legacy-report.md")
 
     # -- purpose-specific report tests --
     for purpose in ["change-tracking", "onboarding", "weekly-report"]:

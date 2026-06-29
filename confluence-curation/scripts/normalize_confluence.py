@@ -106,6 +106,15 @@ def extract_claim_candidates(sentences: List[str], limit: int = 5) -> List[str]:
     return claims
 
 
+def comment_sentences(comment_hits: List[Dict[str, Any]], min_sentence_length: int) -> List[str]:
+    sentences: List[str] = []
+    for comment in comment_hits:
+        excerpt = (comment.get("body_excerpt") or "").strip()
+        for sentence in split_sentences(excerpt, min_sentence_length):
+            sentences.append(f"댓글: {sentence}")
+    return sentences
+
+
 def build_page_relationship_index(relationships: List[Dict[str, Any]]) -> Dict[str, Dict[str, List[str]]]:
     index: Dict[str, Dict[str, List[str]]] = {}
     for relationship in relationships:
@@ -169,9 +178,17 @@ def normalize_pages(
     normalized_pages: List[Dict[str, Any]] = []
     for page in pages:
         body_excerpt = (page.get("body_excerpt") or "").strip()
+        comment_hits = page.get("comment_hits", [])
+        comment_excerpt = " ".join(
+            comment.get("body_excerpt") or ""
+            for comment in comment_hits
+            if comment.get("body_excerpt")
+        ).strip()
         sentences = split_sentences(body_excerpt, min_sentence_length)
-        keywords = extract_keywords(page.get("title") or "", body_excerpt, max_keywords)
-        claim_candidates = extract_claim_candidates(sentences)
+        comments_as_sentences = comment_sentences(comment_hits, min_sentence_length)
+        combined_sentences = sentences + comments_as_sentences
+        keywords = extract_keywords(page.get("title") or "", f"{body_excerpt} {comment_excerpt}", max_keywords)
+        claim_candidates = extract_claim_candidates(combined_sentences)
         recent_contributors = page.get("recent_contributors", [])
         normalized_pages.append(
             {
@@ -189,7 +206,11 @@ def normalize_pages(
                 "version_events": page.get("version_events", []),
                 "body_excerpt": body_excerpt,
                 "body_hash": page.get("body_hash"),
-                "sentences": sentences[:max_sentences],
+                "comment_hits": comment_hits,
+                "comment_hit_count": page.get("comment_hit_count", len(comment_hits)),
+                "latest_comment_at": page.get("latest_comment_at"),
+                "comment_context_excerpt": page.get("comment_context_excerpt"),
+                "sentences": combined_sentences[:max_sentences],
                 "keywords": keywords,
                 "claim_candidates": claim_candidates,
                 "recent_contributors": recent_contributors,
@@ -199,6 +220,7 @@ def normalize_pages(
                 "relationship_targets": relationship_index.get(page.get("page_id"), {}),
                 "signals": {
                     "has_body_excerpt": bool(body_excerpt),
+                    "has_comment_hits": bool(comment_hits),
                     "has_labels": bool(page.get("labels")),
                     "has_ancestors": bool(page.get("ancestors")),
                     "has_recent_contributors": bool(recent_contributors),

@@ -146,15 +146,45 @@ def days_ago(value: Optional[str]) -> Optional[int]:
     return max(0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).days)
 
 
+def comment_contributor_ids(page: Dict[str, Any]) -> List[str]:
+    ids = [
+        account_id
+        for comment in page.get("comment_hits", [])
+        for account_id in (
+            comment.get("created_by_account_id"),
+            comment.get("last_updated_by_account_id"),
+        )
+        if account_id
+    ]
+    return list(dict.fromkeys(ids))
+
+
+def page_activity_contributors(page: Dict[str, Any]) -> List[str]:
+    return list(dict.fromkeys(page.get("recent_contributors", []) + comment_contributor_ids(page)))
+
+
+def latest_activity_at(page: Dict[str, Any]) -> Optional[str]:
+    values = [
+        page.get("updated_at"),
+        page.get("latest_comment_at"),
+        *[
+            comment.get("updated_at") or comment.get("created_at")
+            for comment in page.get("comment_hits", [])
+        ],
+    ]
+    return max([value for value in values if value], default=None)
+
+
 def title_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
 def score_freshness(page: Dict[str, Any], strong_days: int, medium_days: int) -> Tuple[int, List[str]]:
     evidence: List[str] = []
-    updated_days = days_ago(page.get("updated_at"))
+    updated_days = days_ago(latest_activity_at(page))
     version_count = len(page.get("version_events", []))
-    contributor_count = len(page.get("recent_contributors", []))
+    contributor_count = len(page_activity_contributors(page))
+    comment_count = int(page.get("comment_hit_count", 0) or 0)
     score = 0.0
 
     if updated_days is None:
@@ -180,6 +210,10 @@ def score_freshness(page: Dict[str, Any], strong_days: int, medium_days: int) ->
     score += min(contributor_count, 4) * 5
     if contributor_count >= 2:
         evidence.append(f"최근 기여자 {contributor_count}명")
+    if comment_count:
+        score += min(comment_count, 5) * 3
+        latest = page.get("latest_comment_at")
+        evidence.append(f"댓글 hit {comment_count}건" + (f", 최신 댓글 {(latest or '')[:10]}" if latest else ""))
 
     return min(100, round(score)), evidence
 
@@ -201,7 +235,7 @@ def score_people(page: Dict[str, Any], people_by_id: Dict[str, Dict[str, Any]]) 
     evidence: List[str] = []
     missing = False
     total = 0.0
-    contributors = page.get("recent_contributors", [])
+    contributors = page_activity_contributors(page)
     for account_id in contributors:
         person = people_by_id.get(account_id)
         if not person:
@@ -334,15 +368,26 @@ def level_label(score: int) -> str:
 
 def content_signal(page: Dict[str, Any]) -> Tuple[int, List[str]]:
     excerpt = (page.get("body_excerpt") or "").strip()
+    comment_excerpt = " ".join(
+        comment.get("body_excerpt") or ""
+        for comment in page.get("comment_hits", [])
+        if comment.get("body_excerpt")
+    ).strip()
     if not excerpt:
-        return 0, ["본문 내용이 수집되지 않았습니다"]
-    sentences = split_sentences(excerpt)
+        if not comment_excerpt:
+            return 0, ["본문 내용이 수집되지 않았습니다"]
+        sentences = split_sentences(comment_excerpt)
+        return min(12, 4 + len(sentences) * 2), [f"댓글 근거 {len(page.get('comment_hits', []))}건 수집"]
+    sentences = split_sentences(f"{excerpt} {comment_excerpt}")
     score = 10 if len(sentences) >= 2 else 5
     if len(excerpt) >= 800:
         score += 10
     elif len(excerpt) >= 300:
         score += 6
-    return min(20, score), [f"본문 요약 길이 {len(excerpt)}자", f"핵심 문장 {min(len(sentences), 5)}개 추출 가능"]
+    evidence = [f"본문 요약 길이 {len(excerpt)}자", f"핵심 문장 {min(len(sentences), 5)}개 추출 가능"]
+    if page.get("comment_hit_count"):
+        evidence.append(f"댓글 근거 {page.get('comment_hit_count')}건 포함")
+    return min(20, score), evidence
 
 
 def split_sentences(text: str) -> List[str]:
@@ -426,11 +471,14 @@ def synthesize_overview(scored_pages: List[Dict[str, Any]], page_lookup: Dict[st
 
 def summarize_scope(meta: Dict[str, Any], pages: List[Dict[str, Any]], warnings: List[str]) -> List[str]:
     scope = meta.get("scope", {})
+    comment_count = int(scope.get("comment_count", 0) or sum(int(page.get("comment_hit_count", 0) or 0) for page in pages))
     lines = [
         f"- 총 {len(pages)}개 문서를 기준으로 분석했습니다.",
         f"- 인증 방식은 `{meta.get('auth_used', 'unknown')}` 입니다.",
         f"- API 호출 제한은 초당 {meta.get('rate_limit_rps', 'unknown')}회입니다.",
     ]
+    if scope.get("comment_search") and scope.get("comment_search") != "pages":
+        lines.append(f"- 댓글 검색 범위는 `{scope.get('comment_search')}` 이며 댓글 hit {comment_count}건을 함께 반영했습니다.")
     if scope.get("space_key"):
         lines.append(f"- 대상 space는 `{scope['space_key']}` 입니다.")
     if scope.get("all_spaces"):
@@ -691,7 +739,10 @@ def build_markdown_change_tracking(
     lines.append("## 요약")
     lines.extend(summarize_scope(meta, pages, warnings))
     total_changes = sum(len(page.get("version_events", [])) for page in pages)
+    total_comments = sum(int(page.get("comment_hit_count", 0) or 0) for page in pages)
     lines.append(f"- 검토 대상 문서에서 총 {total_changes}건의 버전 이벤트가 확인되었습니다.")
+    if total_comments:
+        lines.append(f"- 댓글 검색 hit {total_comments}건을 변경 신호로 함께 반영했습니다.")
     if warnings:
         lines.append("- 일부 데이터는 API 제한으로 불완전할 수 있습니다.")
     lines.append("")
@@ -738,7 +789,7 @@ def build_markdown_change_tracking(
     lines.append("## 변경 주체 분석")
     contributor_pages: Dict[str, List[str]] = {}
     for page in pages:
-        for contributor_id in page.get("recent_contributors", [])[:3]:
+        for contributor_id in page_activity_contributors(page)[:3]:
             contributor_pages.setdefault(contributor_id, []).append(page["title"])
     if contributor_pages:
         sorted_contributors = sorted(contributor_pages.items(), key=lambda x: len(x[1]), reverse=True)
@@ -806,6 +857,9 @@ def build_markdown_weekly_report(
     if scope.get("contributors"):
         lines.append(f"- 대상 인물: {scope.get('contributors')}")
     lines.append(f"- 수집 문서: {len(pages)}건")
+    total_comments = sum(int(page.get("comment_hit_count", 0) or 0) for page in pages)
+    if total_comments:
+        lines.append(f"- 댓글 hit: {total_comments}건")
     if warnings:
         lines.append("- 수집 경고가 있어 누락 가능성을 함께 확인해야 합니다.")
     lines.append("")
@@ -825,16 +879,17 @@ def build_markdown_weekly_report(
     lines.append("## 인물별 활동")
     contributor_pages: Dict[str, List[Dict[str, Any]]] = {}
     for page in pages:
-        matched = page.get("matched_contributors") or page.get("recent_contributors", [])[:3]
+        matched = page.get("matched_contributors") or page_activity_contributors(page)[:3]
         for contributor_id in matched:
             contributor_pages.setdefault(contributor_id, []).append(page)
     if contributor_pages:
         for contributor_id, contributor_page_list in sorted(contributor_pages.items(), key=lambda item: len(item[1]), reverse=True):
             lines.append(f"### {person_label(contributor_id, people_by_id)}")
-            for page in sorted(contributor_page_list, key=lambda item: item.get("updated_at") or "", reverse=True)[:8]:
-                updated_at = (page.get("updated_at") or "날짜 미상")[:10]
+            for page in sorted(contributor_page_list, key=lambda item: latest_activity_at(item) or "", reverse=True)[:8]:
+                updated_at = (latest_activity_at(page) or "날짜 미상")[:10]
                 title = page.get("title") or "제목 없음"
-                lines.append(f"- {updated_at}: [{title}]({page.get('url')})")
+                comment_note = f" (댓글 {page.get('comment_hit_count')}건)" if page.get("comment_hit_count") else ""
+                lines.append(f"- {updated_at}: [{title}]({page.get('url')}){comment_note}")
     else:
         lines.append("- 대상 인물과 매칭되는 작성/수정 활동이 충분하지 않습니다.")
     lines.append("")
@@ -848,16 +903,19 @@ def build_markdown_weekly_report(
     lines.append("")
 
     lines.append("## 문서별 상세")
-    lines.append("| 문서명 | 최근 수정일 | 대상 인물 매칭 | 최신성 | 판단 근거 |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| 문서명 | 최근 활동일 | 대상 인물 매칭 | 댓글 | 최신성 | 판단 근거 |")
+    lines.append("|---|---|---|---|---|---|")
     page_lookup = {page.get("page_id"): page for page in pages}
     for item in scored_pages:
         page = page_lookup.get(item["page_id"], {})
         matched = page.get("matched_contributors") or item.get("recent_contributors", [])[:2]
         matched_labels = ", ".join(person_label(account_id, people_by_id) for account_id in matched) or "정보 부족"
         evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
+        comment_label = f"{item.get('comment_hit_count', 0)}건"
+        if item.get("latest_comment_at"):
+            comment_label += f" ({item.get('latest_comment_at')[:10]})"
         lines.append(
-            f"| {item['title']} | {item.get('updated_at') or '-'} | {matched_labels} | {level_label(item['freshness_score'])} | {evidence} |"
+            f"| {item['title']} | {item.get('latest_activity_at') or item.get('updated_at') or '-'} | {matched_labels} | {comment_label} | {level_label(item['freshness_score'])} | {evidence} |"
         )
     lines.append("")
 
@@ -985,10 +1043,15 @@ def build_document_table(
     pages: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     lines: List[str] = []
+    has_comments = any(int(item.get("comment_hit_count", 0) or 0) for item in scored_pages)
     if purpose == "change-tracking":
         lines.append("## 문서 현황")
-        lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 최신성 | 변경 빈도 | 탐색 경로 | 판단 근거 |")
-        lines.append("|---|---|---|---|---|---|---|")
+        if has_comments:
+            lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 댓글 | 최신성 | 변경 빈도 | 탐색 경로 | 판단 근거 |")
+            lines.append("|---|---|---|---|---|---|---|---|")
+        else:
+            lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 최신성 | 변경 빈도 | 탐색 경로 | 판단 근거 |")
+            lines.append("|---|---|---|---|---|---|---|")
         page_lookup = {p["page_id"]: p for p in (pages or [])}
         for item in scored_pages:
             updated_at = item.get("updated_at") or "-"
@@ -998,22 +1061,42 @@ def build_document_table(
             source_page = page_lookup.get(item["page_id"], {})
             event_count = len(source_page.get("version_events", []))
             freq_label = ("5건+" if event_count >= 5 else f"{event_count}건") if event_count > 0 else "이력 없음"
-            lines.append(
-                f"| {item['title']} | {updated_at} | {authors} | {level_label(item['freshness_score'])} | {freq_label} | {discovery} | {evidence} |"
-            )
+            if has_comments:
+                comment_label = str(item.get("comment_hit_count", 0) or 0)
+                if item.get("latest_comment_at"):
+                    comment_label = f"{comment_label}건/{item.get('latest_comment_at')[:10]}"
+                lines.append(
+                    f"| {item['title']} | {updated_at} | {authors} | {comment_label} | {level_label(item['freshness_score'])} | {freq_label} | {discovery} | {evidence} |"
+                )
+            else:
+                lines.append(
+                    f"| {item['title']} | {updated_at} | {authors} | {level_label(item['freshness_score'])} | {freq_label} | {discovery} | {evidence} |"
+                )
     else:
         lines.append("## 문서 현황")
-        lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        if has_comments:
+            lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 댓글 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
+            lines.append("|---|---|---|---|---|---|---|---|---|---|")
+        else:
+            lines.append("| 문서명 | 최근 수정일 | 주요 작성자/수정자 | 추정 팀/직책 | 최신성 | 신뢰도 | 상태 | 탐색 경로 | 판단 근거 |")
+            lines.append("|---|---|---|---|---|---|---|---|---|")
         for item in scored_pages:
             team_title = item.get("people_summary") or "정보 부족"
             updated_at = item.get("updated_at") or "-"
             evidence = "; ".join(item.get("evidence", [])[:2]) or "근거 부족"
             authors = ", ".join(item.get("recent_contributors", [])[:2]) or "정보 부족"
             discovery = "; ".join(item.get("discovery_reasons", [])[:2]) or "키워드 검색"
-            lines.append(
-                f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
-            )
+            if has_comments:
+                comment_label = str(item.get("comment_hit_count", 0) or 0)
+                if item.get("latest_comment_at"):
+                    comment_label = f"{comment_label}건/{item.get('latest_comment_at')[:10]}"
+                lines.append(
+                    f"| {item['title']} | {updated_at} | {authors} | {comment_label} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
+                )
+            else:
+                lines.append(
+                    f"| {item['title']} | {updated_at} | {authors} | {team_title} | {level_label(item['freshness_score'])} | {level_label(item['trust_score'])} | {STATUS_KO[item['status_flag']]} | {discovery} | {evidence} |"
+                )
     lines.append("")
     return lines
 
@@ -1082,7 +1165,7 @@ def main() -> int:
         confidence = compute_confidence(freshness_score, trust_score, missing_people, duplicate, warnings)
         status_flag = determine_status(freshness_score, trust_score, confidence, duplicate, superseded)
         recent_people_summary = []
-        for account_id in page.get("recent_contributors", [])[:3]:
+        for account_id in page_activity_contributors(page)[:3]:
             person = people_by_id.get(account_id)
             if not person:
                 continue
@@ -1114,7 +1197,10 @@ def main() -> int:
                 "page_id": page["page_id"],
                 "title": page["title"],
                 "updated_at": page.get("updated_at"),
-                "recent_contributors": page.get("recent_contributors", []),
+                "latest_activity_at": latest_activity_at(page),
+                "recent_contributors": page_activity_contributors(page),
+                "comment_hit_count": page.get("comment_hit_count", 0),
+                "latest_comment_at": page.get("latest_comment_at"),
                 "people_summary": ", ".join(recent_people_summary) if recent_people_summary else "정보 부족",
                 "freshness_score": freshness_score,
                 "change_score": change_score,
@@ -1199,6 +1285,19 @@ def main() -> int:
                         "page_id": page["page_id"],
                         "event_type": "version",
                         "summary_ko": f"{event.get('updated_at')[:10]}: {page['title']} 버전 {event.get('version')} 이 기록되었습니다.",
+                    }
+                )
+        for comment in page.get("comment_hits", [])[:5]:
+            comment_at = comment.get("updated_at") or comment.get("created_at")
+            if comment_at:
+                actor = comment.get("last_updated_by_account_id") or comment.get("created_by_account_id") or "작성자 미상"
+                timeline.append(
+                    {
+                        "at": comment_at,
+                        "page_id": page["page_id"],
+                        "comment_id": comment.get("comment_id"),
+                        "event_type": "comment",
+                        "summary_ko": f"{comment_at[:10]}: {page['title']} 댓글 활동이 있었습니다 ({actor}).",
                     }
                 )
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
