@@ -37,6 +37,7 @@ The goal is to show:
 - which pages look more trustworthy
 - which pages appear stale, duplicated, or superseded
 - how related pages changed over time
+- which matching comments indicate active discussion around those pages
 - which topic clusters have meaningful conflicts, gaps, or follow-up actions
 
 This skill assumes Confluence often lacks reliable labels or formal approval state.
@@ -207,6 +208,9 @@ Reference:
 - Use `--include-root-page` with `--page-url` or `--root-page-id` when the root page itself should be included alongside descendants.
 - Use `--updated-from` and `--updated-to` for exact date windows; use `--days` only for rolling recent windows.
 - Use `--contributors` when the user wants pages from specific people. It matches account id, display/public name, or email against creator, recent updater, and version-history contributors.
+- Use `--include-comments` with `--query` when matching comments should be attached to page search results as activity/evidence. The result remains page-centered and adds `comments[]`, `pages[].comment_hits[]`, `comment_hit_count`, `latest_comment_at`, and `comment_context_excerpt`.
+- Use `--comments-only` with `--query` when the user specifically wants comment hits; the fetcher searches `type = comment`, fetches each parent page as context, and keeps the pipeline page-centered.
+- Do not use comment search to crawl every comment on every page. Comment collection is limited to `--query` CQL hits.
 - Use `--include-body` when the user wants the skill to organize the content itself, not only metadata.
 - Use `--rate-limit-mode window --rate-limit-window-requests 10 --rate-limit-window-seconds 60` for Data Center instances that return `X-RateLimit-Limit: 10` and `X-RateLimit-Interval-Seconds: 60`; this allows the first window of requests to run without forcing a fixed 6-second gap.
 - Use `--cache-dir` to persist fetched results locally and reuse them later.
@@ -243,7 +247,29 @@ Always produce: trend summary, trend signals (new docs, update frequency, contri
 Always produce: topic summary for newcomers, recommended reading order, key content bullets, background context, document map by cluster, exploration suggestions (related spaces/labels).
 
 ### `weekly-report`
-Always produce: report scope, weekly executive summary, topic-level change trends, per-person activity, major update timeline, document detail table, next-week follow-up items. Use this when the user asks for 주간보고, 이번 주 활동, or reports scoped by specific people and dates.
+Always produce: report scope, weekly executive summary, topic-level change trends, per-person activity, major update timeline, document detail table, next-week follow-up items. Use this when the user asks for 주간보고, 이번 주 활동, or reports scoped by specific people and dates. When comment search is enabled, include comment authors/editors in per-person activity and show comment hit counts/latest comment times in document detail.
+
+Comment search examples:
+
+```bash
+python3 confluence-curation/scripts/fetch_confluence.py \
+  --space-key ENG \
+  --query deploy \
+  --include-comments \
+  --include-body \
+  --output tmp/fetch-with-comments.json
+```
+
+```bash
+python3 confluence-curation/scripts/orchestrate_pipeline.py \
+  --space-key ENG \
+  --query deploy \
+  --comments-only \
+  --purpose weekly-report \
+  --updated-from 2026-06-22 \
+  --updated-to 2026-06-28 \
+  --output-dir tmp/weekly-comments
+```
 
 When the user asks for deeper insight analysis, also produce:
 - topic clusters or comparable document groups

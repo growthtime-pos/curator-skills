@@ -25,7 +25,33 @@ def _page_richness(page: Dict[str, Any]) -> int:
         score += len(page["recent_contributors"])
     if page.get("labels"):
         score += len(page["labels"])
+    if page.get("comment_hits"):
+        score += len(page["comment_hits"])
     return score
+
+
+def merge_comment_hits(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Dict[str, Dict[str, Any]] = {}
+    for comment in left + right:
+        comment_id = str(comment.get("comment_id") or "")
+        if not comment_id:
+            continue
+        existing = seen.get(comment_id)
+        if existing is None or (comment.get("updated_at") or "") > (existing.get("updated_at") or ""):
+            seen[comment_id] = comment
+    return list(seen.values())
+
+
+def refresh_comment_summary(page: Dict[str, Any]) -> None:
+    comment_hits = page.get("comment_hits") or []
+    page["comment_hits"] = comment_hits
+    page["comment_hit_count"] = len(comment_hits)
+    page["latest_comment_at"] = max(
+        [comment.get("updated_at") or comment.get("created_at") or "" for comment in comment_hits],
+        default=None,
+    )
+    excerpts = [comment.get("body_excerpt") for comment in comment_hits if comment.get("body_excerpt")]
+    page["comment_context_excerpt"] = " / ".join(excerpts)[:1200] if excerpts else None
 
 
 def merge_pages(
@@ -43,12 +69,15 @@ def merge_pages(
         if existing is None:
             seen[page_id] = page
         else:
+            merged_comments = merge_comment_hits(existing.get("comment_hits", []), page.get("comment_hits", []))
             existing_ver = existing.get("version_number", 0) or 0
             new_ver = page.get("version_number", 0) or 0
             if new_ver > existing_ver:
                 seen[page_id] = page
             elif new_ver == existing_ver and _page_richness(page) > _page_richness(existing):
                 seen[page_id] = page
+            seen[page_id]["comment_hits"] = merged_comments
+            refresh_comment_summary(seen[page_id])
     pages = list(seen.values())[:max_pages]
     return pages, total_before, len(pages)
 
@@ -60,6 +89,10 @@ def merge_people(all_people: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if account_id and account_id not in seen:
             seen[account_id] = person
     return list(seen.values())
+
+
+def merge_comments(all_comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return merge_comment_hits([], all_comments)
 
 
 def merge_relationships(all_rels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -126,12 +159,16 @@ def main() -> int:
     all_pages: List[Tuple[str, Dict[str, Any]]] = []
     all_people: List[Dict[str, Any]] = []
     all_rels: List[Dict[str, Any]] = []
+    all_comments: List[Dict[str, Any]] = []
     all_warnings: List[str] = []
     rounds: List[Dict[str, Any]] = []
 
     for path, data in zip(args.inputs, datasets):
         pages = data.get("pages", [])
         all_pages.extend((path, p) for p in pages)
+        all_comments.extend(data.get("comments", []))
+        for page in pages:
+            all_comments.extend(page.get("comment_hits", []))
         all_people.extend(data.get("people", []))
         all_rels.extend(data.get("relationships", []))
         all_warnings.extend(data.get("warnings", []))
@@ -142,9 +179,11 @@ def main() -> int:
             "file": os.path.abspath(path),
             "query": scope.get("query", ""),
             "page_count": len(pages),
+            "comment_count": len(data.get("comments", [])),
         })
 
     merged_pages, total_before, total_after = merge_pages(all_pages, args.max_pages)
+    merged_comments = merge_comments(all_comments)
     merged_people = merge_people(all_people)
     merged_rels = merge_relationships(all_rels)
     merged_warnings = merge_warnings(all_warnings)
@@ -158,10 +197,14 @@ def main() -> int:
         "total_pages_before_dedup": total_before,
         "total_pages_after_dedup": total_after,
     }
+    merged_scope = dict(merged_meta.get("scope", {}))
+    merged_scope["comment_count"] = len(merged_comments)
+    merged_meta["scope"] = merged_scope
 
     result = {
         "meta": merged_meta,
         "pages": merged_pages,
+        "comments": merged_comments,
         "people": merged_people,
         "relationships": merged_rels,
         "warnings": merged_warnings,

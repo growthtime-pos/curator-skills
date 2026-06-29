@@ -55,6 +55,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-root-page", action="store_true", help="--root-page-id/--page-url 수집 시 루트 페이지 자체도 포함합니다.")
     parser.add_argument("--all-spaces", action="store_true", help="Search across all accessible spaces.")
     parser.add_argument("--query", help="Keyword query to filter relevant pages by title or body excerpt.")
+    parser.add_argument(
+        "--include-comments",
+        action="store_true",
+        help="--query CQL 검색에서 page와 comment를 함께 검색하고 댓글 hit을 부모 페이지에 붙입니다.",
+    )
+    parser.add_argument(
+        "--comments-only",
+        action="store_true",
+        help="--query CQL 검색에서 comment만 검색하고 부모 페이지를 context로 가져옵니다.",
+    )
     parser.add_argument("--label")
     parser.add_argument("--days", type=int)
     parser.add_argument("--updated-from", help="Inclusive updated-at lower bound, YYYY-MM-DD or ISO datetime.")
@@ -135,6 +145,10 @@ def parse_args() -> argparse.Namespace:
         )
     if not args.space_key and not args.root_page_id and not args.all_spaces:
         parser.error("--space-key, --root-page-id, or --all-spaces is required")
+    if args.include_comments and args.comments_only:
+        parser.error("--include-comments and --comments-only are mutually exclusive")
+    if (args.include_comments or args.comments_only) and not args.query:
+        parser.error("--include-comments/--comments-only require --query")
     try:
         if args.updated_from:
             parse_datetime_bound(args.updated_from, end_of_day=False)
@@ -469,6 +483,27 @@ def extract_page_id_from_url(page_url: str) -> Optional[str]:
     return None
 
 
+def comment_search_scope(args: argparse.Namespace) -> str:
+    if getattr(args, "comments_only", False):
+        return "comments-only"
+    if getattr(args, "include_comments", False):
+        return "pages-and-comments"
+    return "pages"
+
+
+def cql_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def cql_type_condition(args: argparse.Namespace) -> str:
+    scope = comment_search_scope(args)
+    if scope == "comments-only":
+        return "type = comment"
+    if scope == "pages-and-comments":
+        return "type in (page, comment)"
+    return "type = page"
+
+
 def build_cache_key(args: argparse.Namespace, deployment_type: str) -> str:
     payload = {
         "base_url": args.base_url.rstrip("/"),
@@ -479,6 +514,7 @@ def build_cache_key(args: argparse.Namespace, deployment_type: str) -> str:
         "include_root_page": args.include_root_page,
         "all_spaces": args.all_spaces,
         "query": args.query,
+        "comment_search": comment_search_scope(args),
         "label": args.label,
         "days": args.days,
         "updated_from": args.updated_from,
@@ -519,6 +555,11 @@ def strip_html(value: Optional[str]) -> Optional[str]:
     text = re.sub(r"<[^>]+>", " ", value)
     text = unescape(re.sub(r"\s+", " ", text)).strip()
     return text[:4000] if text else None
+
+
+def excerpt_text(value: Optional[str], limit: int = 4000) -> Optional[str]:
+    text = strip_html(value)
+    return text[:limit] if text else None
 
 
 def body_hash(value: Optional[str]) -> Optional[str]:
@@ -727,13 +768,83 @@ def persist_data_artifacts(
     return result
 
 
-def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List[Dict[str, Any]]:
+def comment_parent_id(comment: Dict[str, Any]) -> Optional[str]:
+    container = comment.get("container") or {}
+    if container.get("id"):
+        return str(container.get("id"))
+    for ancestor in reversed(comment.get("ancestors") or []):
+        if ancestor.get("type") == "page" and ancestor.get("id"):
+            return str(ancestor.get("id"))
+    return None
+
+
+def normalize_comment_hit(comment: Dict[str, Any], client: ConfluenceClient, args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    parent_id = comment_parent_id(comment)
+    if not parent_id:
+        return None
+    version = comment.get("version", {}) or {}
+    history = comment.get("history", {}) or {}
+    created_by = history.get("createdBy", {}) or {}
+    last_by = version.get("by", {}) or {}
+    container = comment.get("container") or {}
+    comment_id = str(comment.get("id") or "")
+    body_value = ((((comment.get("body") or {}).get("storage") or {}).get("value"))) or ""
+    return {
+        "comment_id": comment_id,
+        "parent_page_id": parent_id,
+        "parent_title": container.get("title"),
+        "space_key": (comment.get("space") or {}).get("key") or args.space_key,
+        "url": client.base_url + comment.get("_links", {}).get("webui", f"/pages/{parent_id}?focusedCommentId={comment_id}"),
+        "status": comment.get("status", "current"),
+        "created_at": history.get("createdDate"),
+        "updated_at": version.get("when"),
+        "created_by_account_id": extract_account_id(created_by),
+        "last_updated_by_account_id": extract_account_id(last_by),
+        "body_excerpt": excerpt_text(body_value, limit=1200),
+    }
+
+
+def attach_comment_hits(raw_pages: List[Dict[str, Any]], comments: List[Dict[str, Any]]) -> None:
+    comments_by_parent: Dict[str, List[Dict[str, Any]]] = {}
+    for comment in comments:
+        parent_id = str(comment.get("parent_page_id") or "")
+        if parent_id:
+            comments_by_parent.setdefault(parent_id, []).append(comment)
+    for page in raw_pages:
+        page_id = str(page.get("id") or "")
+        hits = comments_by_parent.get(page_id, [])
+        if hits:
+            page["_comment_hits"] = hits
+            page["_comment_search_parent"] = True
+
+
+def fetch_page_by_id(
+    client: ConfluenceClient,
+    page_id: str,
+    expand_fields: List[str],
+    warnings: List[str],
+) -> Optional[Dict[str, Any]]:
+    try:
+        return client.get_json(
+            f"/rest/api/content/{page_id}",
+            {"expand": ",".join(expand_fields)},
+        )
+    except FetchError as exc:
+        warnings.append(f"댓글 부모 페이지 {page_id} 를 가져오지 못했습니다: {exc}")
+        return None
+
+
+def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     pages: List[Dict[str, Any]] = []
+    comments: List[Dict[str, Any]] = []
     start = 0
     limit = min(args.limit, 100)
     expand_fields = ["version", "history", "ancestors", "metadata.labels"]
     if args.include_body:
         expand_fields.append("body.storage")
+    search_expand_fields = list(expand_fields)
+    if comment_search_scope(args) != "pages":
+        search_expand_fields = list(dict.fromkeys(search_expand_fields + ["body.storage", "container", "space"]))
     if args.root_page_id and args.include_root_page:
         try:
             root_page = client.get_json(
@@ -745,15 +856,16 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
             client.warnings.append(f"루트 페이지 {args.root_page_id} 를 가져오지 못했습니다: {exc}")
     if args.query:
         path = "/rest/api/content/search"
-        cql_parts = ["type = page"]
+        cql_parts = [cql_type_condition(args)]
         if args.space_key:
-            cql_parts.append(f'space = "{args.space_key}"')
-        cql_query = f'text ~ "{args.query}" or title ~ "{args.query}"'
+            cql_parts.append(f'space = "{cql_quote(args.space_key)}"')
+        quoted_query = cql_quote(args.query)
+        cql_query = f'text ~ "{quoted_query}" or title ~ "{quoted_query}"'
         cql_parts.append(f"({cql_query})")
         base_params = {
             "limit": limit,
             "start": start,
-            "expand": ",".join(expand_fields),
+            "expand": ",".join(search_expand_fields),
             "cql": " and ".join(cql_parts),
         }
     elif args.root_page_id:
@@ -770,17 +882,41 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
         if args.space_key:
             base_params["spaceKey"] = args.space_key
 
-    while len(pages) < args.limit:
+    while True:
+        collected = len(pages) + len(comments) if args.query and comment_search_scope(args) != "pages" else len(pages)
+        if collected >= args.limit:
+            break
         params = dict(base_params)
         params["start"] = start
         payload = client.get_json(path, params)
         batch = payload.get("results", [])
         if not batch:
             break
-        pages.extend(batch)
+        if args.query and comment_search_scope(args) != "pages":
+            for item in batch:
+                item_type = item.get("type")
+                if item_type == "comment":
+                    comment = normalize_comment_hit(item, client, args)
+                    if comment:
+                        comments.append(comment)
+                elif item_type == "page":
+                    pages.append(item)
+        else:
+            pages.extend(batch)
         if len(batch) < limit:
             break
         start += len(batch)
+    if comments:
+        page_ids = {str(page.get("id") or "") for page in pages}
+        for parent_id in list(dict.fromkeys(comment.get("parent_page_id") for comment in comments if comment.get("parent_page_id"))):
+            if str(parent_id) in page_ids:
+                continue
+            parent_page = fetch_page_by_id(client, str(parent_id), expand_fields, client.warnings)
+            if parent_page:
+                parent_page["_comment_search_parent"] = True
+                pages.append(parent_page)
+                page_ids.add(str(parent_page.get("id") or ""))
+        attach_comment_hits(pages, comments)
     deduped: List[Dict[str, Any]] = []
     seen_page_ids = set()
     for page in pages:
@@ -790,7 +926,7 @@ def fetch_page_batch(client: ConfluenceClient, args: argparse.Namespace) -> List
         if page_id:
             seen_page_ids.add(page_id)
         deduped.append(page)
-    return deduped[: args.limit]
+    return deduped[: args.limit], comments
 
 
 def fetch_versions(client: ConfluenceClient, page_id: str, warnings: List[str]) -> List[Dict[str, Any]]:
@@ -933,6 +1069,8 @@ def page_matches_filters(page: Dict[str, Any], args: argparse.Namespace) -> bool
         if args.label not in names:
             return False
     if args.query:
+        if page.get("_comment_search_parent"):
+            return True
         haystacks = [
             (page.get("title") or "").lower(),
             strip_html(((((page.get("body") or {}).get("storage") or {}).get("value"))) or "") or "",
@@ -971,6 +1109,32 @@ def normalize_pages(
         )
         contributor_ids.extend(recent_contributors)
         body_value = ((((page.get("body") or {}).get("storage") or {}).get("value"))) if args.include_body else None
+        comment_hits = page.get("_comment_hits") or []
+        comment_contributors = list(
+            dict.fromkeys(
+                filter(
+                    None,
+                    [
+                        account_id
+                        for comment in comment_hits
+                        for account_id in (
+                            comment.get("created_by_account_id"),
+                            comment.get("last_updated_by_account_id"),
+                        )
+                    ],
+                )
+            )
+        )
+        contributor_ids.extend(comment_contributors)
+        latest_comment_at = max(
+            [comment.get("updated_at") or comment.get("created_at") or "" for comment in comment_hits],
+            default=None,
+        )
+        comment_context_excerpt = None
+        if comment_hits:
+            excerpts = [comment.get("body_excerpt") for comment in comment_hits if comment.get("body_excerpt")]
+            if excerpts:
+                comment_context_excerpt = " / ".join(excerpts)[:1200]
         normalized = {
             "page_id": page_id,
             "title": page.get("title"),
@@ -990,7 +1154,14 @@ def normalize_pages(
             "version_events": version_events,
             "recent_contributors": recent_contributors,
             "body_excerpt": strip_html(body_value),
+            "comment_hits": comment_hits,
+            "comment_hit_count": len(comment_hits),
+            "latest_comment_at": latest_comment_at,
+            "comment_context_excerpt": comment_context_excerpt,
         }
+        if comment_hits:
+            normalized.setdefault("discovery_reasons", [])
+            normalized["discovery_reasons"].append(f"댓글 검색 hit {len(comment_hits)}건")
         pages.append(normalized)
     return pages, list(dict.fromkeys(filter(None, contributor_ids)))
 
@@ -1072,6 +1243,14 @@ def page_contributor_ids(page: Dict[str, Any]) -> List[str]:
         *page.get("recent_contributors", []),
     ]
     ids.extend(item.get("account_id") for item in page.get("version_events", []))
+    ids.extend(
+        account_id
+        for comment in page.get("comment_hits", [])
+        for account_id in (
+            comment.get("created_by_account_id"),
+            comment.get("last_updated_by_account_id"),
+        )
+    )
     return list(dict.fromkeys(str(item) for item in ids if item))
 
 
@@ -1090,6 +1269,11 @@ def page_matches_updated_window(page: Dict[str, Any], args: argparse.Namespace) 
     if not args.updated_from and not args.updated_to:
         return True
     if timestamp_in_updated_window(page.get("updated_at"), args):
+        return True
+    if any(
+        timestamp_in_updated_window(comment.get("updated_at") or comment.get("created_at"), args)
+        for comment in page.get("comment_hits", [])
+    ):
         return True
     return any(
         timestamp_in_updated_window(event.get("updated_at"), args)
@@ -1205,9 +1389,15 @@ def main() -> int:
     auth = maybe_retry_with_password(args, deployment_type, limiter, warnings)
     client = ConfluenceClient(args.base_url, auth, limiter, warnings, insecure=args.insecure)
 
-    raw_pages = fetch_page_batch(client, args)
+    raw_pages, comments = fetch_page_batch(client, args)
     pages, contributor_ids = normalize_pages(raw_pages, client, args, warnings)
     pages = filter_pages_by_updated_window(pages, args)
+    included_page_ids = {page.get("page_id") for page in pages}
+    comments = [
+        comment
+        for comment in comments
+        if comment.get("parent_page_id") in included_page_ids
+    ]
     contributor_ids = [
         account_id
         for page in pages
@@ -1226,6 +1416,12 @@ def main() -> int:
     contributor_filters = parse_contributor_filters(args.contributors)
     if contributor_filters:
         pages = filter_pages_by_contributors(pages, people, contributor_filters, warnings)
+        included_page_ids = {page.get("page_id") for page in pages}
+        comments = [
+            comment
+            for comment in comments
+            if comment.get("parent_page_id") in included_page_ids
+        ]
         remaining_people_ids = {
             account_id
             for page in pages
@@ -1269,6 +1465,8 @@ def main() -> int:
                 "include_root_page": args.include_root_page,
                 "all_spaces": args.all_spaces,
                 "query": args.query,
+                "comment_search": comment_search_scope(args),
+                "comment_count": len(comments),
                 "days": args.days,
                 "updated_from": args.updated_from,
                 "updated_to": args.updated_to,
@@ -1284,6 +1482,7 @@ def main() -> int:
             },
         },
         "pages": pages,
+        "comments": comments,
         "people": people,
         "relationships": relationships,
         "warnings": warnings,

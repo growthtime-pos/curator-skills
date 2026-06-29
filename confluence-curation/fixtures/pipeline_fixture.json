@@ -10,6 +10,8 @@
       "root_page_id": null,
       "all_spaces": false,
       "query": "deploy",
+      "comment_search": "pages-and-comments",
+      "comment_count": 1,
       "days": null,
       "limit": 20
     },
@@ -47,6 +49,24 @@
         "u1",
         "u2"
       ],
+      "comment_hits": [
+        {
+          "comment_id": "c1001",
+          "parent_page_id": "100",
+          "parent_title": "Deployment Runbook",
+          "space_key": "ENG",
+          "url": "https://example.atlassian.net/wiki/pages/100?focusedCommentId=c1001",
+          "status": "current",
+          "created_at": "2026-03-29T08:30:00+09:00",
+          "updated_at": "2026-03-29T09:10:00+09:00",
+          "created_by_account_id": "u4",
+          "last_updated_by_account_id": "u4",
+          "body_excerpt": "Please include the canary verification owner in the weekly deploy report."
+        }
+      ],
+      "comment_hit_count": 1,
+      "latest_comment_at": "2026-03-29T09:10:00+09:00",
+      "comment_context_excerpt": "Please include the canary verification owner in the weekly deploy report.",
       "body_excerpt": "Deployment runbook for production services. This guide explains the deploy process, rollback policy, and release checklist. The owner should verify alarms before and after deploy.",
       "reference_snapshot": {
         "data_dir": "/tmp/confluence-data",
@@ -177,6 +197,21 @@
       }
     }
   ],
+  "comments": [
+    {
+      "comment_id": "c1001",
+      "parent_page_id": "100",
+      "parent_title": "Deployment Runbook",
+      "space_key": "ENG",
+      "url": "https://example.atlassian.net/wiki/pages/100?focusedCommentId=c1001",
+      "status": "current",
+      "created_at": "2026-03-29T08:30:00+09:00",
+      "updated_at": "2026-03-29T09:10:00+09:00",
+      "created_by_account_id": "u4",
+      "last_updated_by_account_id": "u4",
+      "body_excerpt": "Please include the canary verification owner in the weekly deploy report."
+    }
+  ],
   "people": [
     {
       "account_id": "u1",
@@ -211,6 +246,18 @@
         "team": "Reliability",
         "title": "Reliability Manager",
         "role_band": "lead",
+        "confidence": "high"
+      }
+    },
+    {
+      "account_id": "u4",
+      "display_name": "Dana Choi",
+      "public_name": "Dana Choi",
+      "email": "dana@example.com",
+      "org_hint": {
+        "team": "Release Engineering",
+        "title": "Release Coordinator",
+        "role_band": "individual",
         "confidence": "high"
       }
     }
